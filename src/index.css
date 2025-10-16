@@ -1,0 +1,50 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --primary-color: #f97316;
+  --secondary-color: #3b82f6;
+  --accent-color: #10b981;
+  --button-radius: 0.5rem;
+  --font-size: 16px;
+  --content-padding: 2rem;
+}
+
+body {
+  font-size: var(--font-size);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  touch-action: manipulation;
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button, a, input, select, textarea {
+  min-height: 44px;
+  touch-action: manipulation;
+}
+
+@media (max-width: 768px) {
+  :root {
+    --font-size: 14px;
+    --content-padding: 1rem;
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.2s ease-out;
+}
