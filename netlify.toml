@@ -5,6 +5,8 @@
 [build.environment]
   NODE_VERSION = "18"
   # Set these in Netlify > Site settings > Environment variables
+  VITE_SUPABASE_URL = "https://izmucqxaithkurzdezbk.supabase.co"
+  VITE_SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Iml6bXVjcXhhaXRoa3VyemRlemJrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTk1NTk0NDEsImV4cCI6MjA3NTEzNTQ0MX0.AGE9rroS6OeycIc7un-7e1oanlZ5PD8ndAzlCOMatlQ"
 
 # SPA fallback to index.html
 [[redirects]]
