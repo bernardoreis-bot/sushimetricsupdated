@@ -44,6 +44,9 @@ export default function StockCount() {
   const [orderPredictions, setOrderPredictions] = useState<OrderPrediction[]>([]);
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<'count' | 'predictions'>('count');
+  const [stockText, setStockText] = useState('');
+  const [importText, setImportText] = useState('');
+  const [textFeedback, setTextFeedback] = useState<string | null>(null);
 
   useEffect(() => {
     loadSites();
@@ -51,11 +54,13 @@ export default function StockCount() {
   }, []);
 
   useEffect(() => {
-    if (selectedSite) {
+    if (!selectedSite) return;
+
+    if (products.length > 0) {
       loadStockCounts();
-      loadOrderPredictions();
     }
-  }, [selectedSite]);
+    loadOrderPredictions();
+  }, [selectedSite, products]);
 
   const loadSites = async () => {
     const { data } = await supabase
@@ -84,6 +89,25 @@ export default function StockCount() {
     }
   };
 
+  const buildStockTemplate = (counts: StockCount[]) => {
+    if (products.length === 0) return '';
+
+    const header = [
+      '# Stock Count Template',
+      '# Format: CODE = quantity (decimals allowed). Lines starting with # are ignored.',
+      '# Example: SUSHI01 = 12.5  # Salmon nigiri',
+      ''
+    ];
+
+    const lines = products.map(product => {
+      const stock = counts.find(sc => sc.product_id === product.id);
+      const quantity = stock ? stock.quantity : 0;
+      return `${product.code} = ${quantity}  # ${product.name}`;
+    });
+
+    return [...header, ...lines].join('\n');
+  };
+
   const loadStockCounts = async () => {
     if (!selectedSite) return;
 
@@ -96,7 +120,7 @@ export default function StockCount() {
       .eq('count_date', today);
 
     if (existingCounts && existingCounts.length > 0) {
-      setStockCounts(existingCounts.map(c => ({
+      const mappedCounts = existingCounts.map(c => ({
         id: c.id,
         site_id: c.site_id,
         product_id: c.product_id,
@@ -104,16 +128,24 @@ export default function StockCount() {
         unit_value: Number(c.unit_value),
         count_date: c.count_date,
         notes: c.notes || ''
-      })));
+      }));
+      setStockCounts(mappedCounts);
+      setStockText(buildStockTemplate(mappedCounts));
+      setImportText('');
+      setTextFeedback(null);
     } else {
-      setStockCounts(products.map(p => ({
+      const defaultCounts = products.map(p => ({
         site_id: selectedSite,
         product_id: p.id,
         quantity: 0,
         unit_value: p.last_unit_price,
         count_date: today,
         notes: ''
-      })));
+      }));
+      setStockCounts(defaultCounts);
+      setStockText(buildStockTemplate(defaultCounts));
+      setImportText('');
+      setTextFeedback(null);
     }
   };
 
@@ -232,14 +264,141 @@ export default function StockCount() {
       }
 
       alert('Stock counts saved successfully!');
-      loadStockCounts();
-      loadOrderPredictions();
+      await loadStockCounts();
+      await loadOrderPredictions();
     } catch (error) {
       console.error('Error saving stock counts:', error);
       alert('Failed to save stock counts');
     } finally {
       setLoading(false);
     }
+  };
+
+  useEffect(() => {
+    if (products.length === 0) return;
+    setStockText(buildStockTemplate(stockCounts));
+  }, [stockCounts, products]);
+
+  const parseStockText = (text: string) => {
+    const lines = text.split(/\r?\n/);
+    const updates: { productId: string; quantity: number }[] = [];
+    const errors: string[] = [];
+
+    const codeMap = new Map(products.map(product => [product.code.toUpperCase(), product]));
+
+    lines.forEach((rawLine, index) => {
+      const commentFree = rawLine.split('#')[0].trim();
+      if (!commentFree) return;
+
+      const parts = commentFree.split('=');
+      if (parts.length < 2) {
+        errors.push(`Line ${index + 1}: missing '='`);
+        return;
+      }
+
+      const code = parts[0].trim().toUpperCase();
+      const quantityStr = parts.slice(1).join('=').trim();
+
+      if (!code) {
+        errors.push(`Line ${index + 1}: missing product code`);
+        return;
+      }
+
+      if (!quantityStr) {
+        errors.push(`Line ${index + 1}: missing quantity for ${code}`);
+        return;
+      }
+
+      const quantity = parseFloat(quantityStr);
+      if (Number.isNaN(quantity)) {
+        errors.push(`Line ${index + 1}: invalid quantity '${quantityStr}' for ${code}`);
+        return;
+      }
+
+      const product = codeMap.get(code);
+      if (!product) {
+        errors.push(`Line ${index + 1}: unknown product code '${code}'`);
+        return;
+      }
+
+      updates.push({ productId: product.id, quantity });
+    });
+
+    return { updates, errors };
+  };
+
+  const handleImportFromText = () => {
+    const trimmed = importText.trim();
+    if (!trimmed) {
+      setTextFeedback('Please paste the stock text to import.');
+      return;
+    }
+
+    const { updates, errors } = parseStockText(trimmed);
+    if (errors.length > 0) {
+      setTextFeedback(`Unable to import:\n${errors.join('\n')}`);
+      return;
+    }
+
+    if (updates.length === 0) {
+      setTextFeedback('No stock values detected.');
+      return;
+    }
+
+    setStockCounts(prev => {
+      const today = new Date().toISOString().split('T')[0];
+      const countMap = new Map(prev.map(sc => [sc.product_id, sc]));
+
+      updates.forEach(({ productId, quantity }) => {
+        const existing = countMap.get(productId);
+        if (existing) {
+          countMap.set(productId, { ...existing, quantity });
+        } else {
+          const product = products.find(p => p.id === productId);
+          countMap.set(productId, {
+            site_id: selectedSite,
+            product_id: productId,
+            quantity,
+            unit_value: product?.last_unit_price ?? 0,
+            count_date: prev[0]?.count_date ?? today,
+            notes: ''
+          });
+        }
+      });
+
+      return products.map(product => {
+        const match = countMap.get(product.id);
+        if (match) {
+          return match;
+        }
+        return {
+          site_id: selectedSite,
+          product_id: product.id,
+          quantity: 0,
+          unit_value: product.last_unit_price,
+          count_date: prev[0]?.count_date ?? today,
+          notes: ''
+        };
+      });
+    });
+
+    setImportText('');
+    setTextFeedback(`Imported counts for ${updates.length} product${updates.length === 1 ? '' : 's'}.`);
+  };
+
+  const handleCopyTemplate = async () => {
+    try {
+      await navigator.clipboard.writeText(stockText);
+      setTextFeedback('Template copied to clipboard.');
+    } catch (error) {
+      console.error('Clipboard error:', error);
+      setTextFeedback('Unable to copy to clipboard. Please copy manually.');
+    }
+  };
+
+  const handleClearImport = () => {
+    setImportText('');
+    setTextFeedback(null);
   };
 
   const filteredProducts = products.filter(p =>
@@ -321,6 +480,63 @@ export default function StockCount() {
                   </button>
                 </div>
 
+                {/* TEXT IMPORT FEATURE - TEST */}
+                <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+                  <h3 className="text-lg font-semibold text-gray-900 mb-4">📝 Text Import Tool</h3>
+                  
+                  {textFeedback && (
+                    <div className="mb-4 px-4 py-3 rounded-md bg-blue-50 border border-blue-200 text-sm text-blue-800 whitespace-pre-line">
+                      {textFeedback}
+                    </div>
+                  )}
+
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="flex flex-col">
+                      <label className="text-sm font-semibold text-gray-700 mb-2">Current counts template</label>
+                      <textarea
+                        value={stockText}
+                        readOnly
+                        className="flex-1 min-h-[200px] font-mono text-sm bg-gray-50 border border-gray-300 rounded-lg p-3 resize-none"
+                      />
+                      <div className="mt-2 flex gap-2">
+                        <button
+                          type="button"
+                          onClick={handleCopyTemplate}
+                          className="px-4 py-2 bg-gray-800 text-white text-sm font-medium rounded-lg hover:bg-gray-900 transition-colors"
+                        >
+                          Copy template
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col">
+                      <label className="text-sm font-semibold text-gray-700 mb-2">Paste stock counts here</label>
+                      <textarea
+                        value={importText}
+                        onChange={(e) => setImportText(e.target.value)}
+                        placeholder="Example:&#10;SUSHI01 = 12.5&#10;SAU-TERI = 6"
+                        className="flex-1 min-h-[200px] font-mono text-sm border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-orange-500 focus:border-transparent"
+                      />
+                      <div className="mt-2 flex gap-2">
+                        <button
+                          type="button"
+                          onClick={handleImportFromText}
+                          className="px-4 py-2 bg-orange-500 text-white text-sm font-medium rounded-lg hover:bg-orange-600 transition-colors"
+                        >
+                          Apply counts from text
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleClearImport}
+                          className="px-4 py-2 bg-gray-100 text-sm font-medium rounded-lg text-gray-700 hover:bg-gray-200 transition-colors"
+                        >
+                          Clear
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
                 <div className="relative">
                   <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
                   <input
@@ -331,7 +547,7 @@ export default function StockCount() {
                     className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-transparent"
                   />
                 </div>
-              </div>
+
 
               <div className="overflow-x-auto">
                 <table className="w-full">

@@ -42,7 +42,7 @@ export async function validateTransactionsSchema(): Promise<SchemaValidationResu
       const firstRow = data[0];
       const existingColumns = Object.keys(firstRow);
 
-      const requiredColumns = ['transaction_type', 'site_id', 'supplier_id', 'transaction_date'];
+      const requiredColumns = ['site_id', 'supplier_id', 'transaction_date'];
       const missingColumns = requiredColumns.filter(col => !existingColumns.includes(col));
 
       if (missingColumns.length > 0) {

@@ -71,6 +71,9 @@ export default function StockCountNew() {
   const [analyticsSiteFilter, setAnalyticsSiteFilter] = useState<'all' | string>('all');
 
   const categories = ['Ambient', 'Chilled', 'Frozen', 'Packaging', 'Cleaning', 'Other'];
+  const [stockText, setStockText] = useState('');
+  const [importText, setImportText] = useState('');
+  const [textFeedback, setTextFeedback] = useState<string | null>(null);
 
   useEffect(() => {
     loadSites();
@@ -99,6 +102,145 @@ export default function StockCountNew() {
       return () => clearTimeout(timer);
     }
   }, [stockEntries, autoSaveEnabled, selectedSite, countDate]);
+
+  const buildStockTemplate = () => {
+    const header = [
+      '# Stock Count Template',
+      '# Format: CODE  # Product Name (unit) - case — notes = quantity',
+      '# Example: CODE123  # Example Product (1kg) - case — keep refrigerated = 12.5',
+      ''
+    ];
+    // Deduplicate by normalized supplier_product_code, prefer entries that have notes
+    const codeToProduct = new Map<string, Product>();
+    products.forEach(p => {
+      const code = (p.supplier_product_code || '').toUpperCase().trim();
+      if (!code) return;
+      const existing = codeToProduct.get(code);
+      if (!existing) {
+        codeToProduct.set(code, p);
+      } else if ((!existing.notes || existing.notes.length === 0) && p.notes && p.notes.length > 0) {
+        codeToProduct.set(code, p);
+      }
+    });
+    const unique = Array.from(codeToProduct.values());
+
+    const lines = unique.map(p => {
+      const entry = stockEntries.find(e => e.product_mapping_id === p.id);
+      const quantity = entry ? entry.quantity : 0;
+      const notesPart = p.notes ? ` — ${p.notes}` : '';
+      return `${p.supplier_product_code}  # ${p.supplier_product_name} (${p.unit}) - case${notesPart} = ${quantity}`;
+    });
+    return [...header, ...lines].join('\n');
+  };
+
+  useEffect(() => {
+    if (products.length === 0) {
+      setStockText('');
+      return;
+    }
+    setStockText(buildStockTemplate());
+  }, [products, stockEntries]);
+
+  const parseStockText = (text: string) => {
+    const lines = text.split(/\r?\n/);
+    const updates: { productId: string; quantity: number }[] = [];
+    const errors: string[] = [];
+    const codeMap = new Map(products.map(p => [p.supplier_product_code.toUpperCase(), p]));
+    lines.forEach((rawLine, index) => {
+      const trimmed = rawLine.trim();
+      if (!trimmed || trimmed.startsWith('#')) return;
+
+      // Extract code as the first token on the line
+      const codeMatch = trimmed.match(/^([A-Za-z0-9._-]+)/);
+      if (!codeMatch) {
+        errors.push(`Line ${index + 1}: missing product code`);
+        return;
+      }
+      const code = codeMatch[1].toUpperCase();
+
+      // Quantity is the value after the last '=' on the line
+      const eqIdx = trimmed.lastIndexOf('=');
+      if (eqIdx === -1) {
+        errors.push(`Line ${index + 1}: missing '=' for ${code}`);
+        return;
+      }
+      let quantityStr = trimmed.slice(eqIdx + 1);
+      // Remove any trailing inline comments after '='
+      const hashIdx = quantityStr.indexOf('#');
+      if (hashIdx !== -1) quantityStr = quantityStr.slice(0, hashIdx);
+      quantityStr = quantityStr.trim();
+
+      if (!quantityStr) {
+        errors.push(`Line ${index + 1}: missing quantity for ${code}`);
+        return;
+      }
+      const quantity = parseFloat(quantityStr);
+      if (Number.isNaN(quantity)) {
+        errors.push(`Line ${index + 1}: invalid quantity '${quantityStr}' for ${code}`);
+        return;
+      }
+
+      const product = codeMap.get(code);
+      if (!product) {
+        errors.push(`Line ${index + 1}: unknown product code '${code}'`);
+        return;
+      }
+      updates.push({ productId: product.id, quantity });
+    });
+    return { updates, errors };
+  };
+
+  const handleImportFromText = () => {
+    const trimmed = importText.trim();
+    if (!trimmed) {
+      setTextFeedback('Please paste the stock text to import.');
+      return;
+    }
+    const { updates, errors } = parseStockText(trimmed);
+    if (errors.length > 0) {
+      setTextFeedback(`Unable to import:\n${errors.join('\n')}`);
+      return;
+    }
+    if (updates.length === 0) {
+      setTextFeedback('No stock values detected.');
+      return;
+    }
+    setStockEntries(prev => {
+      const entryMap = new Map(prev.map(e => [e.product_mapping_id, e]));
+      updates.forEach(({ productId, quantity }) => {
+        const product = products.find(p => p.id === productId);
+        const unitPrice = product?.unit_price ?? 0;
+        const existing = entryMap.get(productId);
+        if (existing) {
+          entryMap.set(productId, { ...existing, quantity, unit_value: unitPrice });
+        } else {
+          entryMap.set(productId, {
+            product_mapping_id: productId,
+            quantity,
+            unit_value: unitPrice,
+            notes: ''
+          });
+        }
+      });
+      return Array.from(entryMap.values());
+    });
+    setImportText('');
+    setTextFeedback(`Imported counts for ${updates.length} product${updates.length === 1 ? '' : 's'}.`);
+  };
+
+  const handleCopyTemplate = async () => {
+    try {
+      await navigator.clipboard.writeText(stockText);
+      setTextFeedback('Template copied to clipboard.');
+    } catch (error) {
+      setTextFeedback('Unable to copy to clipboard. Please copy manually.');
+    }
+  };
+
+  const handleClearImport = () => {
+    setImportText('');
+    setTextFeedback(null);
+  };
 
   const loadSites = async () => {
     const { data } = await supabase
@@ -610,6 +752,58 @@ export default function StockCountNew() {
           </div>
 
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
+            {textFeedback && (
+              <div className="mb-4 px-4 py-3 rounded-md bg-blue-50 border border-blue-200 text-sm text-blue-800 whitespace-pre-line">
+                {textFeedback}
+              </div>
+            )}
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="flex flex-col">
+                <label className="text-sm font-semibold text-gray-700 mb-2">Current counts template</label>
+                <textarea
+                  value={stockText}
+                  readOnly
+                  className="flex-1 min-h-[200px] font-mono text-sm bg-gray-50 border border-gray-300 rounded-lg p-3 resize-none"
+                />
+                <div className="mt-2 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={handleCopyTemplate}
+                    className="px-4 py-2 bg-gray-800 text-white text-sm font-medium rounded-lg hover:bg-gray-900 transition-colors"
+                  >
+                    Copy template
+                  </button>
+                </div>
+              </div>
+              <div className="flex flex-col">
+                <label className="text-sm font-semibold text-gray-700 mb-2">Paste stock counts here</label>
+                <textarea
+                  value={importText}
+                  onChange={(e) => setImportText(e.target.value)}
+                  placeholder={`Example:\nCODE123  # Example Product (1kg) - case = 12.5\nBEEF01  # Bulgogi Beef (1kg) - case = 6`}
+                  className="flex-1 min-h-[200px] font-mono text-sm border border-gray-300 rounded-lg p-3 focus:outline-none focus:ring-2 focus:ring-orange-500"
+                />
+                <div className="mt-2 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={handleImportFromText}
+                    className="px-4 py-2 bg-orange-500 text-white text-sm font-medium rounded-lg hover:bg-orange-600 transition-colors"
+                  >
+                    Apply counts from text
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleClearImport}
+                    className="px-4 py-2 bg-gray-100 text-sm font-medium rounded-lg text-gray-700 hover:bg-gray-200 transition-colors"
+                  >
+                    Clear
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
             <div className="flex gap-3 mb-4">
               <div className="relative flex-1">
                 <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
@@ -804,9 +998,9 @@ export default function StockCountNew() {
                         </span>
                       </td>
                       <td className="px-6 py-4 text-sm text-gray-900 text-right">{count.quantity}</td>
-                      <td className="px-6 py-4 text-sm text-gray-900 text-right">£{parseFloat(count.unit_value).toFixed(2)}</td>
+                      <td className="px-6 py-4 text-sm text-gray-900 text-right">£{Number(count.unit_value).toFixed(2)}</td>
                       <td className="px-6 py-4 text-sm font-semibold text-gray-900 text-right">
-                        £{(count.quantity * parseFloat(count.unit_value)).toFixed(2)}
+                        £{(count.quantity * Number(count.unit_value)).toFixed(2)}
                       </td>
                       <td className="px-6 py-4 text-sm text-gray-600">{count.notes || '-'}</td>
                       <td className="px-6 py-4 text-center">

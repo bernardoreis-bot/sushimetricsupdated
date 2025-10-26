@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { supabase } from './lib/supabase';
+import { supabase, isSupabaseConfigured } from './lib/supabase';
 import Auth from './components/Auth';
 import Sidebar from './components/Sidebar';
 import DashboardNew from './components/DashboardNew';
@@ -24,6 +24,10 @@ function App() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    if (!isSupabaseConfigured) {
+      setLoading(false);
+      return;
+    }
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       setLoading(false);
@@ -35,13 +39,13 @@ function App() {
       setSession(session);
     });
 
-    // Load and apply customization settings
     loadCustomizationSettings();
 
     return () => subscription.unsubscribe();
   }, []);
 
   const loadCustomizationSettings = async () => {
+    if (!isSupabaseConfigured) return;
     try {
       // Try localStorage first for instant load
       const cached = localStorage.getItem('dashboard_customization');
@@ -95,6 +99,17 @@ function App() {
       root.style.setProperty('--content-padding', settings.contentPadding);
     }
   };
+
+  if (!isSupabaseConfigured) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-6">
+        <div className="bg-white rounded-xl shadow p-6 max-w-md text-center">
+          <h2 className="text-xl font-bold text-gray-900">Configuration required</h2>
+          <p className="text-gray-600 mt-2">Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in your environment.</p>
+        </div>
+      </div>
+    );
+  }
 
   if (loading) {
     return (

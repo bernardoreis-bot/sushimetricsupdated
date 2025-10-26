@@ -36,7 +36,6 @@ export default function OrderPredictions() {
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [selectedSite, setSelectedSite] = useState('');
   const [selectedSupplier, setSelectedSupplier] = useState('');
-  const [transactionType, setTransactionType] = useState('invoice');
   const [predictionPeriod, setPredictionPeriod] = useState(2);
   const [predictions, setPredictions] = useState<PredictionItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -145,7 +144,7 @@ export default function OrderPredictions() {
           id,
           amount,
           transaction_date,
-          transaction_type,
+          supplier_id,
           invoice_items (
             item_name,
             quantity,
@@ -154,7 +153,6 @@ export default function OrderPredictions() {
         `)
         .eq('site_id', selectedSite)
         .eq('supplier_id', selectedSupplier)
-        .eq('transaction_type', transactionType)
         .gte('transaction_date', twelveWeeksAgo.toISOString().split('T')[0])
         .order('transaction_date', { ascending: true });
 
@@ -167,7 +165,7 @@ export default function OrderPredictions() {
       }
 
       if (!transactions || transactions.length === 0) {
-        const detailedMessage = `No ${transactionType} transactions found for "${supplierName}" at "${siteName}" in the past 12 weeks.\n\nPossible reasons:\n• No orders placed with this supplier at this location\n• Transaction type mismatch (try switching between invoice/credit/delivery)\n• Supplier-site combination doesn't exist in your data\n• Transactions may be older than 12 weeks\n\nNext steps:\n• Verify you have ${transactionType} transactions in the Transactions module\n• Check that the supplier is correctly linked to this site\n• Try a different transaction type or supplier`;
+        const detailedMessage = `No transactions found for "${supplierName}" at "${siteName}" in the past 12 weeks.\n\nPossible reasons:\n• No orders placed with this supplier at this location\n• Supplier-site combination doesn't exist in your data\n• Transactions may be older than 12 weeks\n\nNext steps:\n• Verify you have transactions in the Transactions module\n• Check that the supplier is correctly linked to this site\n• Try a different supplier`;
 
         setDiagnostic(detailedMessage);
         setDiagnosticType('warning');
@@ -186,7 +184,7 @@ export default function OrderPredictions() {
       const transWithItems = transactions.filter(t => t.invoice_items && t.invoice_items.length > 0);
 
       if (transWithItems.length === 0) {
-        const detailedMessage = `Found ${transactions.length} ${transactionType} transaction(s) for "${supplierName}" at "${siteName}", but NONE have itemized invoice data.\n\nProblem: Transactions exist but lack invoice_items entries.\n\nSolution:\n• Transactions must have detailed line items (products/quantities) in the invoice_items table\n• Go to the Transactions module and ensure invoices have itemized entries\n• Upload or manually enter invoice line items for these transactions\n\nCannot generate predictions without itemized order history.`;
+        const detailedMessage = `Found ${transactions.length} transaction(s) for "${supplierName}" at "${siteName}", but NONE have itemized invoice data.\n\nProblem: Transactions exist but lack invoice_items entries.\n\nSolution:\n• Transactions must have detailed line items (products/quantities) in the invoice_items table\n• Go to the Transactions module and ensure invoices have itemized entries\n• Upload or manually enter invoice line items for these transactions\n\nCannot generate predictions without itemized order history.`;
 
         setDiagnostic(detailedMessage);
         setDiagnosticType('error');
@@ -297,7 +295,7 @@ export default function OrderPredictions() {
       if (!hasStockData) {
         setDiagnosticType('warning');
       } else {
-        const successMsg = `Successfully analyzed ${transWithItems.length} ${transactionType} transactions from "${supplierName}" at "${siteName}" covering ${weeksOfData} weeks of data. Generated predictions for ${predictionItems.length} items.`;
+        const successMsg = `Successfully analyzed ${transWithItems.length} transactions from "${supplierName}" at "${siteName}" covering ${weeksOfData} weeks of data. Generated predictions for ${predictionItems.length} items.`;
         setDiagnostic(successMsg);
         setDiagnosticType('info');
       }
@@ -377,7 +375,7 @@ export default function OrderPredictions() {
 
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
         <h2 className="text-lg font-semibold text-gray-900 mb-4">Prediction Parameters</h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
               Site Location <span className="text-red-500">*</span>
@@ -407,19 +405,6 @@ export default function OrderPredictions() {
               {suppliers.map((s) => (
                 <option key={s.id} value={s.id}>{s.name}</option>
               ))}
-            </select>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">Transaction Type</label>
-            <select
-              value={transactionType}
-              onChange={(e) => setTransactionType(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-            >
-              <option value="invoice">Invoice</option>
-              <option value="credit">Credit</option>
-              <option value="delivery">Delivery</option>
             </select>
           </div>
 
@@ -664,7 +649,7 @@ export default function OrderPredictions() {
               <li><strong>Predicted Order Qty:</strong> (Avg Weekly × {predictionPeriod} weeks) - Current Stock (never negative)</li>
               <li><strong>Weeks Covered:</strong> Current Stock ÷ Avg Weekly Usage</li>
               <li><strong>Risk Level:</strong> High if stock covers less than 1 week or high variability; Medium if less than 2 weeks</li>
-              <li><strong>Data Source:</strong> Past 12 weeks of {transactionType} transactions from selected supplier at selected site</li>
+              <li><strong>Data Source:</strong> Past 12 weeks of transactions from selected supplier at selected site</li>
             </ul>
           </div>
         </>
