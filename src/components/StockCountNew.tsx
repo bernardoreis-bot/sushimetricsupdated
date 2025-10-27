@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Save, History, Plus, Edit2, Trash2, Search, Filter, Calendar, Package, ChevronDown, ChevronUp, Download, TrendingUp } from 'lucide-react';
+import { Save, History, Trash2, Search, Package, ChevronDown, ChevronUp, Download, TrendingUp } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
@@ -17,6 +17,10 @@ interface Product {
   supplier_id: string;
   notes: string | null;
   unit_price: number;
+  units_per_box?: number;
+  cost_per_unit?: number;
+  cost_per_box?: number;
+  input_mode?: 'boxes' | 'units' | 'both';
 }
 
 interface StockCountEntry {
@@ -25,6 +29,13 @@ interface StockCountEntry {
   quantity: number;
   unit_value: number;
   notes: string;
+  boxes?: number;
+  units?: number;
+  units_per_box?: number;
+  cost_per_unit?: number;
+  cost_per_box?: number;
+  total_cost?: number;
+  input_mode?: 'boxes' | 'units' | 'both';
 }
 
 interface HistoricalCount {
@@ -103,11 +114,95 @@ export default function StockCountNew() {
     }
   }, [stockEntries, autoSaveEnabled, selectedSite, countDate]);
 
+  type InputMode = 'boxes' | 'units' | 'both';
+  type SkuConfig = { units_per_box?: number; cost_per_unit?: number; cost_per_box?: number; input_mode?: InputMode };
+
+  const inferUnitsPerBox = (text: string): number | undefined => {
+    if (!text) return undefined;
+    // Examples: "24 x 330ml", "24x330ml", "case of 24", "pack of 12", "12pk", "12/330ml", "x24"
+    const patterns: RegExp[] = [
+      /(\d+)\s*[xX×]/,               // 24 x 330
+      /case\s*of\s*(\d+)/i,          // case of 24
+      /pack\s*of\s*(\d+)/i,          // pack of 12
+      /(\d+)\s*pk/i,                  // 12pk
+      /(\d+)\s*\/\s*\d+/i,         // 24/330
+      /x\s*(\d+)/i                    // x24
+    ];
+    for (const rx of patterns) {
+      const m = text.match(rx);
+      if (m && m[1]) {
+        const n = Number(m[1]);
+        if (Number.isFinite(n) && n > 0) return n;
+      }
+    }
+    return undefined;
+  };
+
+  const parseSkuConfigFromNotes = (notes: string): SkuConfig => {
+    const cfg: SkuConfig = {};
+    if (!notes) return cfg;
+    const jsonMatch = notes.match(/StockConfig:\s*(\{[\s\S]*?\})/i) || notes.match(/SCFG:\s*(\{[\s\S]*?\})/i);
+    if (jsonMatch) {
+      try { return JSON.parse(jsonMatch[1]); } catch {}
+    }
+    // fallback key:value scanning
+    notes.split(/\n|;/).forEach((line) => {
+      const [kRaw, vRaw] = line.split(':');
+      if (!kRaw || !vRaw) return;
+      const k = kRaw.trim().toLowerCase();
+      const v = vRaw.trim();
+      if (k.includes('units_per_box')) cfg.units_per_box = Number(v);
+      if (k.includes('cost_per_unit')) cfg.cost_per_unit = Number(v);
+      if (k.includes('cost_per_box')) cfg.cost_per_box = Number(v);
+      if (k.includes('input_mode')) cfg.input_mode = (v as InputMode);
+    });
+    if (!cfg.units_per_box) {
+      const inferred = inferUnitsPerBox(notes);
+      if (inferred) cfg.units_per_box = inferred;
+    }
+    return cfg;
+  };
+
+  const extractSCMetaFromNotes = (notes: string | null): any => {
+    if (!notes) return null;
+    const m = notes.match(/SCMeta:\s*(\{[\s\S]*?\})/);
+    if (m) { try { return JSON.parse(m[1]); } catch { return null; } }
+    return null;
+  };
+
+  const buildSCMetaNotes = (userNotes: string, meta: any) => {
+    const clean = (userNotes || '').replace(/\n?SCMeta:\s*(\{[\s\S]*?\})/g, '').trim();
+    const spacer = clean ? '\n' : '';
+    return `${clean}${spacer}SCMeta: ${JSON.stringify(meta)}`;
+  };
+
+  const getProductById = (id: string) => products.find(p => p.id === id);
+
+  const computeFor = (product: Product, boxes: number, units: number) => {
+    const unitsPerBox = Number(product.units_per_box ?? 1) || 1;
+    const totalUnits = (Number(boxes) || 0) * unitsPerBox + (Number(units) || 0);
+    // Prefer explicit costs if present
+    const costPerUnit = Number(product.cost_per_unit ?? product.unit_price ?? 0) || 0;
+    const costPerBox = Number(product.cost_per_box ?? (unitsPerBox * costPerUnit)) || 0;
+    const totalCost = (Number(boxes) || 0) * costPerBox + (Number(units) || 0) * costPerUnit;
+    return { unitsPerBox, totalUnits, costPerUnit, costPerBox, totalCost };
+  };
+
+  const formatSmartStock = (totalUnits: number, unitsPerBox: number) => {
+    const upb = unitsPerBox || 1;
+    if (upb <= 0) return `${Number(totalUnits || 0)} units`;
+    const boxes = Math.floor((totalUnits || 0) / upb);
+    const remainder = Math.round((((totalUnits || 0) - boxes * upb) + Number.EPSILON) * 100) / 100;
+    if (remainder === 0 && boxes > 0) return `${boxes} box${boxes === 1 ? '' : 'es'}`;
+    if (boxes > 0) return `${boxes} box${boxes === 1 ? '' : 'es'} and ${remainder} units`;
+    return `${remainder} units`;
+  };
+
   const buildStockTemplate = () => {
     const header = [
       '# Stock Count Template',
-      '# Format: CODE  # Product Name (unit) - case — notes = quantity',
-      '# Example: CODE123  # Example Product (1kg) - case — keep refrigerated = 12.5',
+      '# Format: CODE  # Product Name (unit) - case — notes • £/box • £/unit = quantity',
+      '# Example: CODE123  # Example Product (1kg) - case — keep refrigerated • £24.00/box • £1.00/unit = 12.5',
       ''
     ];
     // Deduplicate by normalized supplier_product_code, prefer entries that have notes
@@ -128,7 +223,10 @@ export default function StockCountNew() {
       const entry = stockEntries.find(e => e.product_mapping_id === p.id);
       const quantity = entry ? entry.quantity : 0;
       const notesPart = p.notes ? ` — ${p.notes}` : '';
-      return `${p.supplier_product_code}  # ${p.supplier_product_name} (${p.unit}) - case${notesPart} = ${quantity}`;
+      const upb = Number(p.units_per_box ?? 1) || 1;
+      const cpu = Number(p.cost_per_unit ?? p.unit_price ?? 0) || 0;
+      const cpb = Number(p.cost_per_box ?? (upb * cpu)) || 0;
+      return `${p.supplier_product_code}  # ${p.supplier_product_name} (${p.unit}) - case${notesPart} • £${cpb.toFixed(2)}/box • £${cpu.toFixed(2)}/unit = ${quantity}`;
     });
     return [...header, ...lines].join('\n');
   };
@@ -262,7 +360,34 @@ export default function StockCountNew() {
       .select('id, supplier_product_code, supplier_product_name, category, unit, supplier_id, notes, unit_price')
       .order('category, supplier_product_name');
 
-    if (data) setProducts(data as any);
+    if (data) {
+      const enriched = (data as any[]).map((p) => {
+        const cfg = parseSkuConfigFromNotes(p.notes || '');
+        const isCaseUnit = /case|box|pack|tray/i.test(p.unit || '');
+        const inferredUpb = inferUnitsPerBox(p.notes || '') || 1;
+        const unitsPerBox = Number(cfg.units_per_box ?? p.units_per_box ?? inferredUpb ?? 1) || 1;
+        const base = Number(p.unit_price ?? 0) || 0;
+        let costPerBox = Number(cfg.cost_per_box ?? p.cost_per_box ?? (isCaseUnit ? base : 0));
+        let costPerUnit = Number(cfg.cost_per_unit ?? p.cost_per_unit ?? (isCaseUnit ? (unitsPerBox ? base / unitsPerBox : base) : base));
+        if (!isCaseUnit) {
+          // If priced per unit, derive box cost from units
+          if (!costPerBox) costPerBox = unitsPerBox * costPerUnit;
+        } else {
+          // If priced per case, ensure both present
+          if (!costPerBox) costPerBox = base;
+          if (!costPerUnit) costPerUnit = unitsPerBox ? costPerBox / unitsPerBox : base;
+        }
+        const inputMode = (cfg.input_mode ?? p.input_mode ?? 'both') as 'boxes' | 'units' | 'both';
+        return {
+          ...p,
+          units_per_box: unitsPerBox,
+          cost_per_unit: costPerUnit,
+          cost_per_box: costPerBox,
+          input_mode: inputMode,
+        } as Product;
+      });
+      setProducts(enriched as any);
+    }
   };
 
   const loadExistingCount = async () => {
@@ -273,13 +398,30 @@ export default function StockCountNew() {
       .eq('count_date', countDate);
 
     if (data && data.length > 0) {
-      setStockEntries(data.map(d => ({
-        id: d.id,
-        product_mapping_id: d.product_mapping_id,
-        quantity: d.quantity,
-        unit_value: d.unit_value,
-        notes: d.notes || '',
-      })));
+      setStockEntries(data.map(d => {
+        const product = getProductById(d.product_mapping_id);
+        const meta = extractSCMetaFromNotes(d.notes || '');
+        const boxes = meta?.boxes ?? 0;
+        const units = meta?.units ?? d.quantity ?? 0;
+        const cfgUnitsPerBox = meta?.units_per_box ?? product?.units_per_box ?? 1;
+        const costPerUnit = meta?.cost_per_unit ?? product?.cost_per_unit ?? product?.unit_price ?? 0;
+        const costPerBox = meta?.cost_per_box ?? product?.cost_per_box ?? (cfgUnitsPerBox * costPerUnit);
+        const totalUnits = (boxes * cfgUnitsPerBox) + units;
+        const totalCost = boxes * costPerBox + units * costPerUnit;
+        return {
+          id: d.id,
+          product_mapping_id: d.product_mapping_id,
+          quantity: totalUnits,
+          unit_value: costPerUnit,
+          notes: (d.notes || '').replace(/\n?SCMeta:\s*(\{[\s\S]*?\})/g, '').trim(),
+          boxes,
+          units,
+          units_per_box: cfgUnitsPerBox,
+          cost_per_unit: costPerUnit,
+          cost_per_box: costPerBox,
+          total_cost: totalCost,
+        } as StockCountEntry;
+      }));
     } else {
       setStockEntries([]);
     }
@@ -377,25 +519,38 @@ export default function StockCountNew() {
     }
   };
 
-  const handleQuantityChange = (productMappingId: string, quantity: number) => {
-    const product = products.find(p => p.id === productMappingId);
-    const unitPrice = product?.unit_price || 0;
+  const upsertEntry = (productMappingId: string, boxes: number, units: number) => {
+    const product = getProductById(productMappingId);
+    if (!product) return;
+    const { unitsPerBox, totalUnits, costPerUnit, costPerBox, totalCost } = computeFor(product, boxes, units);
     const existing = stockEntries.find(e => e.product_mapping_id === productMappingId);
-
+    const next = {
+      product_mapping_id: productMappingId,
+      boxes,
+      units,
+      units_per_box: unitsPerBox,
+      quantity: totalUnits,
+      cost_per_unit: costPerUnit,
+      cost_per_box: costPerBox,
+      unit_value: costPerUnit,
+      total_cost: totalCost,
+      notes: existing?.notes || '',
+    } as StockCountEntry;
     if (existing) {
-      setStockEntries(stockEntries.map(e =>
-        e.product_mapping_id === productMappingId
-          ? { ...e, quantity, unit_value: unitPrice }
-          : e
-      ));
+      setStockEntries(stockEntries.map(e => e.product_mapping_id === productMappingId ? { ...e, ...next } : e));
     } else {
-      setStockEntries([...stockEntries, {
-        product_mapping_id: productMappingId,
-        quantity,
-        unit_value: unitPrice,
-        notes: '',
-      }]);
+      setStockEntries([...stockEntries, next]);
     }
+  };
+
+  const handleBoxesChange = (productMappingId: string, boxes: number) => {
+    const existing = stockEntries.find(e => e.product_mapping_id === productMappingId);
+    upsertEntry(productMappingId, Math.max(0, boxes), existing?.units || 0);
+  };
+
+  const handleUnitsChange = (productMappingId: string, units: number) => {
+    const existing = stockEntries.find(e => e.product_mapping_id === productMappingId);
+    upsertEntry(productMappingId, existing?.boxes || 0, Math.max(0, units));
   };
 
   const handleNotesChange = (productMappingId: string, notes: string) => {
@@ -408,6 +563,22 @@ export default function StockCountNew() {
     if (!selectedSite) return;
 
     const entriesToSave = stockEntries.filter(e => e.quantity > 0);
+
+    // Validate per-SKU input mode rules
+    const violations: string[] = [];
+    entriesToSave.forEach(e => {
+      const p = getProductById(e.product_mapping_id);
+      const mode = p?.input_mode || 'both';
+      const bx = e.boxes || 0;
+      const un = e.units || 0;
+      if (mode === 'boxes' && un > 0) violations.push(`${p?.supplier_product_code}: units not allowed`);
+      if (mode === 'units' && bx > 0) violations.push(`${p?.supplier_product_code}: boxes not allowed`);
+      if (bx === 0 && un === 0) violations.push(`${p?.supplier_product_code}: enter boxes or units`);
+    });
+    if (violations.length > 0) {
+      alert(`Please fix the following before saving:\n${violations.join('\n')}`);
+      return;
+    }
     if (entriesToSave.length === 0) return;
 
     await supabase
@@ -416,15 +587,25 @@ export default function StockCountNew() {
       .eq('site_id', selectedSite)
       .eq('count_date', countDate);
 
-    const dataToInsert = entriesToSave.map(entry => ({
-      site_id: selectedSite,
-      product_mapping_id: entry.product_mapping_id,
-      quantity: entry.quantity,
-      unit_value: entry.unit_value,
-      count_date: countDate,
-      counted_by: countedBy || null,
-      notes: entry.notes,
-    }));
+    const dataToInsert = entriesToSave.map(entry => {
+      const meta = {
+        boxes: entry.boxes || 0,
+        units: entry.units || 0,
+        units_per_box: entry.units_per_box || 1,
+        cost_per_unit: entry.cost_per_unit ?? entry.unit_value,
+        cost_per_box: entry.cost_per_box ?? ((entry.units_per_box || 1) * (entry.cost_per_unit ?? entry.unit_value)),
+        total_cost: entry.total_cost ?? (entry.quantity * entry.unit_value),
+      };
+      return {
+        site_id: selectedSite,
+        product_mapping_id: entry.product_mapping_id,
+        quantity: entry.quantity,
+        unit_value: entry.unit_value,
+        count_date: countDate,
+        counted_by: countedBy || null,
+        notes: buildSCMetaNotes(entry.notes, meta),
+      };
+    });
 
     const { error } = await supabase
       .from('stock_counts')
@@ -459,15 +640,25 @@ export default function StockCountNew() {
       .eq('site_id', selectedSite)
       .eq('count_date', countDate);
 
-    const dataToInsert = entriesToSave.map(entry => ({
-      site_id: selectedSite,
-      product_mapping_id: entry.product_mapping_id,
-      quantity: entry.quantity,
-      unit_value: entry.unit_value,
-      count_date: countDate,
-      counted_by: countedBy || null,
-      notes: entry.notes,
-    }));
+    const dataToInsert = entriesToSave.map(entry => {
+      const meta = {
+        boxes: entry.boxes || 0,
+        units: entry.units || 0,
+        units_per_box: entry.units_per_box || 1,
+        cost_per_unit: entry.cost_per_unit ?? entry.unit_value,
+        cost_per_box: entry.cost_per_box ?? ((entry.units_per_box || 1) * (entry.cost_per_unit ?? entry.unit_value)),
+        total_cost: entry.total_cost ?? (entry.quantity * entry.unit_value),
+      };
+      return {
+        site_id: selectedSite,
+        product_mapping_id: entry.product_mapping_id,
+        quantity: entry.quantity,
+        unit_value: entry.unit_value,
+        count_date: countDate,
+        counted_by: countedBy || null,
+        notes: buildSCMetaNotes(entry.notes, meta),
+      };
+    });
 
     const { error } = await supabase
       .from('stock_counts')
@@ -557,10 +748,13 @@ export default function StockCountNew() {
               <tr>
                 <th>Product Code</th>
                 <th>Product Name</th>
-                <th>Quantity</th>
-                <th>Unit</th>
-                <th>Unit Value (£)</th>
-                <th>Total Value (£)</th>
+                <th>Boxes</th>
+                <th>Units</th>
+                <th>Total Units</th>
+                <th>Units/Box</th>
+                <th>Cost/Unit (£)</th>
+                <th>Cost/Box (£)</th>
+                <th>Total Cost (£)</th>
                 <th>Notes</th>
               </tr>
             </thead>
@@ -572,16 +766,19 @@ export default function StockCountNew() {
                     ${item.product?.supplier_product_name || '-'}
                     ${item.product?.notes ? `<br><span class="product-notes">${item.product.notes}</span>` : ''}
                   </td>
+                  <td>${item.boxes || 0}</td>
+                  <td>${item.units || 0}</td>
                   <td>${item.quantity}</td>
-                  <td>${item.product?.unit || '-'}</td>
-                  <td>£${item.unit_value.toFixed(2)}</td>
-                  <td>£${(item.quantity * item.unit_value).toFixed(2)}</td>
+                  <td>${item.units_per_box || ((item.product && item.product.unit) ? '' : '')}</td>
+                  <td>£${(item.cost_per_unit ?? item.unit_value).toFixed(2)}</td>
+                  <td>£${(item.cost_per_box ?? ((item.units_per_box || 1) * (item.cost_per_unit ?? item.unit_value))).toFixed(2)}</td>
+                  <td>£${(item.total_cost ?? (item.quantity * (item.cost_per_unit ?? item.unit_value))).toFixed(2)}</td>
                   <td>${item.notes || '-'}</td>
                 </tr>
               `).join('')}
               <tr class="category-total">
-                <td colspan="5" style="text-align: right;"><strong>Category Total:</strong></td>
-                <td><strong>£${group.items.reduce((sum, item) => sum + (item.quantity * item.unit_value), 0).toFixed(2)}</strong></td>
+                <td colspan="8" style="text-align: right;"><strong>Category Total:</strong></td>
+                <td><strong>£${group.items.reduce((sum, item) => sum + (item.total_cost ?? (item.quantity * (item.cost_per_unit ?? item.unit_value))), 0).toFixed(2)}</strong></td>
                 <td></td>
               </tr>
             </tbody>
@@ -631,7 +828,7 @@ export default function StockCountNew() {
     products: filteredProducts.filter(p => p.category === category),
   })).filter(g => g.products.length > 0);
 
-  const totalValue = stockEntries.reduce((sum, e) => sum + (e.quantity * e.unit_value), 0);
+  const totalValue = stockEntries.reduce((sum, e) => sum + (e.total_cost ?? (e.quantity * e.unit_value)), 0);
 
   return (
     <div className="p-8">
@@ -864,15 +1061,61 @@ export default function StockCountNew() {
                                 <p className="text-xs text-gray-400 mt-1">{product.notes}</p>
                               )}
                             </div>
-                            <input
-                              type="number"
-                              min="0"
-                              step="0.01"
-                              value={entry?.quantity || ''}
-                              onChange={(e) => handleQuantityChange(product.id, parseFloat(e.target.value) || 0)}
-                              placeholder="Qty"
-                              className="w-24 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
-                            />
+                            {(() => {
+                              const mode = product.input_mode || 'both';
+                              const showBoxes = mode !== 'units';
+                              const showUnits = mode !== 'boxes';
+                              const upb = product.units_per_box || 1;
+                              const boxesVal: any = entry?.boxes ?? '';
+                              const unitsVal: any = entry?.units ?? '';
+                              const totalUnits = entry?.quantity || 0;
+                              const smart = formatSmartStock(totalUnits, upb);
+                              const cpu = entry?.cost_per_unit ?? product.cost_per_unit ?? product.unit_price ?? 0;
+                              const cpb = entry?.cost_per_box ?? product.cost_per_box ?? (upb * cpu);
+                              const totalCost = entry?.total_cost ?? (totalUnits * cpu);
+                              return (
+                                <>
+                                  {showBoxes ? (
+                                    <div className="flex items-center gap-2">
+                                      <input
+                                        type="number"
+                                        min="0"
+                                        step="1"
+                                        value={boxesVal}
+                                        onChange={(e) => handleBoxesChange(product.id, parseFloat(e.target.value) || 0)}
+                                        placeholder="Boxes"
+                                        className="w-24 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                                      />
+                                      <span className="text-xs text-gray-600">boxes</span>
+                                    </div>
+                                  ) : (
+                                    <div className="text-xs text-gray-400 w-28 text-center">Boxes disabled</div>
+                                  )}
+                                  {showUnits ? (
+                                    <div className="flex items-center gap-2">
+                                      <input
+                                        type="number"
+                                        min="0"
+                                        step="1"
+                                        value={unitsVal}
+                                        onChange={(e) => handleUnitsChange(product.id, parseFloat(e.target.value) || 0)}
+                                        placeholder="Units"
+                                        className="w-24 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                                      />
+                                      <span className="text-xs text-gray-600">units</span>
+                                    </div>
+                                  ) : (
+                                    <div className="text-xs text-gray-400 w-28 text-center">Units disabled</div>
+                                  )}
+                                  <div
+                                    className="text-xs text-gray-500 w-60"
+                                    title={`Total ${totalUnits} units • ${Math.floor((totalUnits||0)/(upb||1))} boxes + ${(totalUnits||0) - Math.floor((totalUnits||0)/(upb||1))*(upb||1)} units`}
+                                  >
+                                    {smart} • {upb} units/box • £{cpb.toFixed(2)}/box • £{cpu.toFixed(2)}/unit • total £{(entry?.total_cost ?? totalCost).toFixed(2)}
+                                  </div>
+                                </>
+                              );
+                            })()}
                             <input
                               type="text"
                               value={entry?.notes || ''}
