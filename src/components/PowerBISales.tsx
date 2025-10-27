@@ -4,6 +4,8 @@ import { supabase } from '../lib/supabase';
 interface Site { id: string; name: string; }
 
 const POWERBI_EMBED_URL = 'https://app.powerbi.com/reportEmbed?reportId=c016912d-8d76-4829-85bb-e2f4056dd807&appId=eb0beee5-b009-4dee-816d-21adae41cf84&autoAuth=true&ctid=d1fd9353-f65b-4e79-a56a-70b4591ad484&actionBarEnabled=true&reportCopilotInEmbed=true';
+const POWERBI_DAILY_URL = 'https://app.powerbi.com/reportEmbed?reportId=a22f8ce4-fc3a-44d0-a85f-83b43ee619c0&appId=eb0beee5-b009-4dee-816d-21adae41cf84&autoAuth=true&ctid=d1fd9353-f65b-4e79-a56a-70b4591ad484&actionBarEnabled=true';
+const POWERBI_DETAIL_URL = 'https://app.powerbi.com/reportEmbed?reportId=f5aec466-0ff8-478c-86b9-83ab98400152&appId=eb0beee5-b009-4dee-816d-21adae41cf84&autoAuth=true&ctid=d1fd9353-f65b-4e79-a56a-70b4591ad484&actionBarEnabled=true';
 
 export default function PowerBISales() {
   const [sites, setSites] = useState<Site[]>([]);
@@ -45,18 +47,7 @@ export default function PowerBISales() {
     setSalesCategoryId(sales?.id || null);
   };
 
-  const loadAudit = async () => {
-    const { data } = await supabase
-      .from('app_settings')
-      .select('setting_value')
-      .eq('setting_key', 'powerbi_sales_audit')
-      .maybeSingle();
-    try {
-      setAudit(data?.setting_value ? JSON.parse(data.setting_value).slice(0, 50) : []);
-    } catch {
-      setAudit([]);
-    }
-  };
+  
 
   const triggerManual = async () => {
     setLoading(true);
@@ -103,14 +94,6 @@ export default function PowerBISales() {
       </div>
 
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 mb-6">
-        <div className="aspect-video w-full border rounded overflow-hidden">
-          <iframe title="Franchise Report" width="100%" height="100%" src={POWERBI_EMBED_URL} frameBorder={0} allowFullScreen />
-        </div>
-      </div>
-
-      
-
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
         <h2 className="text-lg font-semibold text-gray-900 mb-2">Quick Add Sales Transaction (Sunday {lastSunday})</h2>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           {['Allerton Road','Sefton Park','Old Swan'].map((name) => (
@@ -132,7 +115,26 @@ export default function PowerBISales() {
         </div>
         {feedback && <div className="mt-2 text-sm text-gray-700">{feedback}</div>}
       </div>
-      
+
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 mb-6">
+        <div className="aspect-video w-full border rounded overflow-hidden">
+          <iframe title="Franchise Report" width="100%" height="100%" src={POWERBI_EMBED_URL} frameBorder={0} allowFullScreen />
+        </div>
+      </div>
+
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 mb-6">
+        <h2 className="text-lg font-semibold text-gray-900 mb-2">Daily Sales Report</h2>
+        <div className="aspect-video w-full border rounded overflow-hidden">
+          <iframe title="Daily Sales Report - Franchise" width="100%" height="100%" src={POWERBI_DAILY_URL} frameBorder={0} allowFullScreen />
+        </div>
+      </div>
+
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+        <h2 className="text-lg font-semibold text-gray-900 mb-2">Detail Export</h2>
+        <div className="aspect-video w-full border rounded overflow-hidden">
+          <iframe title="Detail Export" width="100%" height="100%" src={POWERBI_DETAIL_URL} frameBorder={0} allowFullScreen />
+        </div>
+      </div>
     </div>
   );
 }
