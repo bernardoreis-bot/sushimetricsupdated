@@ -42,16 +42,16 @@ export const handler = async (event: any) => {
 
     const { email, pass } = map[account];
     if (!email || !pass) {
-      return { statusCode: 400, body: JSON.stringify({ error: `Missing credentials for ${account}. Set TRAIL_* env vars in Netlify.` }) };
+      return { statusCode: 400, body: JSON.stringify({ error: `Missing credentials for ${account}. Add them in Sushi Metrics → People Management → Trail Progress → Trail Credentials, or set TRAIL_* env vars in Netlify.` }) };
     }
 
-    const chromium = await import('chrome-aws-lambda');
-    const puppeteer = await import('puppeteer-core');
+    const chromium = require('chrome-aws-lambda');
+    const puppeteer = require('puppeteer-core');
     const browser = await puppeteer.launch({
-      args: chromium.args,
-      defaultViewport: { width: 1440, height: 900 },
+      args: [...chromium.args, '--disable-gpu', '--single-process'],
+      defaultViewport: chromium.defaultViewport,
       executablePath: await chromium.executablePath,
-      headless: 'new' as any,
+      headless: chromium.headless,
     });
 
     try {
