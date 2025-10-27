@@ -25,13 +25,13 @@ export const handler = async () => {
     if (!email || !pass) {
       return { statusCode: 400, body: JSON.stringify({ error: 'Missing ATTENSI_EMAIL/ATTENSI_PASSWORD in Netlify env.' }) };
     }
-    const chromium = await import('chrome-aws-lambda');
-    const puppeteer = await import('puppeteer-core');
+    const chromium = require('chrome-aws-lambda');
+    const puppeteer = require('puppeteer-core');
     const browser = await puppeteer.launch({
-      args: chromium.args,
-      defaultViewport: { width: 1440, height: 900 },
+      args: [...chromium.args, '--disable-gpu', '--single-process'],
+      defaultViewport: chromium.defaultViewport,
       executablePath: await chromium.executablePath,
-      headless: 'new' as any,
+      headless: chromium.headless,
     });
     try {
       const page = await browser.newPage();
