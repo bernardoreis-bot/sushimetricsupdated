@@ -2,6 +2,11 @@
   command = "npm run build"
   publish = "dist"
 
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+  external_node_modules = ["chrome-aws-lambda", "puppeteer-core"]
+
 [build.environment]
   NODE_VERSION = "18"
   # Set these in Netlify > Site settings > Environment variables
@@ -13,3 +18,7 @@
   from = "/*"
   to = "/index.html"
   status = 200
+
+[[scheduled]]
+  path = "/.netlify/functions/powerbi-sales-schedule"
+  schedule = "0 11,15 * * 1-3"

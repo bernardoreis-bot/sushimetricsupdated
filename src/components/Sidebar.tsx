@@ -45,6 +45,7 @@ export default function Sidebar({ currentPage, onNavigate }: SidebarProps) {
       title: 'Future Tools',
       items: [
         { id: 'predictions', label: 'Order Predictions', icon: TrendingUp },
+        { id: 'powerbi', label: 'PowerBI Sales', icon: BarChart3 },
       ]
     },
     {

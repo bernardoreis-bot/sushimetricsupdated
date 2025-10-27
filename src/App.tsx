@@ -9,6 +9,7 @@ import Sites from './components/Sites';
 import Suppliers from './components/Suppliers';
 import ProductionSheetPanel from './components/ProductionSheetPanel';
 import StockCountNew from './components/StockCountNew';
+import PowerBISales from './components/PowerBISales';
 import ParsingRules from './components/ParsingRules';
 import OrderPredictions from './components/OrderPredictions';
 import ItemMapping from './components/ItemMapping';
@@ -130,6 +131,7 @@ function App() {
         {currentPage === 'dashboard' && <DashboardNew />}
         {currentPage === 'transactions' && <TransactionsNew />}
         {currentPage === 'stockcount' && <StockCountNew />}
+        {currentPage === 'powerbi' && <PowerBISales />}
         {currentPage === 'predictions' && <OrderPredictions />}
         {currentPage === 'production' && <ProductionSheetPanel />}
         {currentPage === 'itemmapping' && <ItemMapping />}

@@ -58,6 +58,9 @@ export default function ItemMapping() {
     unit: 'CASE',
     unit_price: '0.00',
     notes: '',
+    units_per_box: '1',
+    price_basis: 'box' as 'box' | 'unit',
+    input_mode: 'both' as 'boxes' | 'units' | 'both',
   });
 
   useEffect(() => {
@@ -165,6 +168,18 @@ export default function ItemMapping() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
+    const upb = Math.max(1, Math.floor(parseFloat(formData.units_per_box || '1') || 1));
+    const base = parseFloat(formData.unit_price) || 0;
+    const cost_per_box = formData.price_basis === 'box' ? base : base * upb;
+    const cost_per_unit = formData.price_basis === 'unit' ? base : (upb ? base / upb : base);
+
+    const scfg = { units_per_box: upb, cost_per_unit, cost_per_box, input_mode: formData.input_mode };
+    const mergeSCFG = (text: string, cfg: any) => {
+      const clean = (text || '').replace(/\n?SCFG:\s*(\{[\s\S]*?\})/i, '').replace(/\n?StockConfig:\s*(\{[\s\S]*?\})/i, '').trim();
+      const spacer = clean ? '\n' : '';
+      return `${clean}${spacer}SCFG: ${JSON.stringify(cfg)}`;
+    };
+
     const dataToSave = {
       supplier_id: formData.supplier_id || null,
       supplier_product_code: formData.supplier_product_code,
@@ -172,8 +187,8 @@ export default function ItemMapping() {
       internal_product_id: null,
       category: formData.category,
       unit: formData.unit,
-      unit_price: parseFloat(formData.unit_price) || 0,
-      notes: formData.notes || null,
+      unit_price: formData.price_basis === 'box' ? cost_per_box : cost_per_unit,
+      notes: mergeSCFG(formData.notes, scfg) || null,
     };
 
     if (editingMapping) {
@@ -200,6 +215,23 @@ export default function ItemMapping() {
 
   const handleEdit = (mapping: ProductMapping) => {
     setEditingMapping(mapping);
+    // Extract SCFG from notes if present
+    const parseSCFG = (text: string | null) => {
+      if (!text) return {} as any;
+      const m = text.match(/SCFG:\s*(\{[\s\S]*?\})/i) || text.match(/StockConfig:\s*(\{[\s\S]*?\})/i);
+      if (m) { try { return JSON.parse(m[1]); } catch { return {}; } }
+      return {} as any;
+    };
+    const cfg: any = parseSCFG(mapping.notes || '');
+    const upb = cfg.units_per_box ? String(cfg.units_per_box) : '1';
+    const cost_box = typeof cfg.cost_per_box === 'number' ? cfg.cost_per_box : undefined;
+    const cost_unit = typeof cfg.cost_per_unit === 'number' ? cfg.cost_per_unit : undefined;
+    const mappingUnitPrice = (mapping as any).unit_price || 0;
+    let price_basis: 'box' | 'unit' = 'box';
+    if (cost_unit && Math.abs(mappingUnitPrice - cost_unit) < 0.001) price_basis = 'unit';
+    if (cost_box && Math.abs(mappingUnitPrice - cost_box) < 0.001) price_basis = 'box';
+    if (!cost_box && /case|box|pack|tray/i.test(mapping.unit || '')) price_basis = 'box';
+
     setFormData({
       supplier_id: mapping.supplier_id || '',
       supplier_product_code: mapping.supplier_product_code,
@@ -208,6 +240,9 @@ export default function ItemMapping() {
       unit: mapping.unit,
       unit_price: (mapping as any).unit_price?.toString() || '0.00',
       notes: mapping.notes || '',
+      units_per_box: upb,
+      price_basis,
+      input_mode: (cfg.input_mode as any) || 'both',
     });
     setShowAddForm(true);
   };
@@ -232,6 +267,9 @@ export default function ItemMapping() {
       unit: 'CASE',
       unit_price: '0.00',
       notes: '',
+      units_per_box: '1',
+      price_basis: 'box',
+      input_mode: 'both',
     });
     setEditingMapping(null);
     setShowAddForm(false);
@@ -760,7 +798,56 @@ export default function ItemMapping() {
                   placeholder="0.00"
                 />
               </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Units per Box</label>
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={formData.units_per_box}
+                  onChange={(e) => setFormData({ ...formData, units_per_box: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                  placeholder="e.g., 24"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Price entered is per</label>
+                <select
+                  value={formData.price_basis}
+                  onChange={(e) => setFormData({ ...formData, price_basis: e.target.value as any })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                >
+                  <option value="box">Box / Case</option>
+                  <option value="unit">Single Unit</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Counting inputs allowed</label>
+                <select
+                  value={formData.input_mode}
+                  onChange={(e) => setFormData({ ...formData, input_mode: e.target.value as any })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                >
+                  <option value="both">Boxes and Units</option>
+                  <option value="boxes">Boxes only</option>
+                  <option value="units">Units only</option>
+                </select>
+              </div>
             </div>
+
+            {(() => {
+              const upb = Math.max(1, Math.floor(parseFloat(formData.units_per_box || '1') || 1));
+              const base = parseFloat(formData.unit_price) || 0;
+              const cpb = formData.price_basis === 'box' ? base : base * upb;
+              const cpu = formData.price_basis === 'unit' ? base : (upb ? base / upb : base);
+              return (
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-2 text-sm text-gray-700">
+                  <div className="bg-gray-50 border rounded p-2">Units/box: <span className="font-semibold">{upb}</span></div>
+                  <div className="bg-gray-50 border rounded p-2">£/box: <span className="font-semibold">{cpb.toFixed(2)}</span></div>
+                  <div className="bg-gray-50 border rounded p-2">£/unit: <span className="font-semibold">{cpu.toFixed(2)}</span></div>
+                </div>
+              );
+            })()}
 
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">Notes</label>
