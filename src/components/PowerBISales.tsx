@@ -16,11 +16,11 @@ export default function PowerBISales() {
   const [loading, setLoading] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [manual, setManual] = useState<{ [k: string]: string }>({});
+  const [salesCategoryId, setSalesCategoryId] = useState<string | null>(null);
 
   const lastSunday = useMemo(() => {
     const d = new Date();
     const day = d.getDay();
-    const diff = (day === 0 ? 0 : day) + 7; // ensure last Sunday even if today is Sunday later in the day
     const sunday = new Date(d);
     sunday.setDate(d.getDate() - day);
     return sunday.toISOString().split('T')[0];
@@ -29,6 +29,7 @@ export default function PowerBISales() {
   useEffect(() => {
     loadSites();
     loadConfig();
+    loadSalesCategory();
   }, []);
 
   const loadSites = async () => {
@@ -51,6 +52,15 @@ export default function PowerBISales() {
       const parsed = data?.setting_value ? JSON.parse(data.setting_value) : null;
       if (parsed && parsed.site_map) setConfig(parsed);
     } catch {}
+  };
+
+  const loadSalesCategory = async () => {
+    const { data } = await supabase
+      .from('transaction_categories')
+      .select('id, code')
+      .eq('is_active', true);
+    const sales = (data || []).find((c: any) => (c.code || '').toUpperCase() === 'SALES');
+    setSalesCategoryId(sales?.id || null);
   };
 
   const saveConfig = async () => {
@@ -79,8 +89,15 @@ export default function PowerBISales() {
         body: JSON.stringify({ action: 'extract_latest', manual_override: null })
       });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.error || 'Failed');
-      setFeedback(json.message || 'Triggered extraction');
+      if (!res.ok) {
+        const hint = json?.error?.includes('OPENAI') || json?.error?.toLowerCase?.().includes('openai')
+          ? 'Missing or invalid OPENAI_API_KEY on Netlify.'
+          : json?.error?.includes('SUPABASE') || json?.error?.toLowerCase?.().includes('supabase')
+          ? 'Missing SUPABASE_SERVICE_ROLE_KEY on Netlify.'
+          : '';
+        throw new Error((json.error || 'Failed') + (hint ? ` — ${hint}` : ''));
+      }
+      setFeedback(json.message || 'Extracted and created sales transactions');
     } catch (e: any) {
       setFeedback(e.message || 'Failed to trigger');
     } finally {
@@ -92,19 +109,30 @@ export default function PowerBISales() {
     setLoading(true);
     setFeedback(null);
     try {
-      const amounts: { [siteId: string]: number } = {};
-      Object.entries(config.site_map).forEach(([pbiName, siteId]) => {
-        const v = parseFloat(manual[pbiName] || '');
-        if (siteId && !isNaN(v)) amounts[siteId] = v;
-      });
-      const res = await fetch('/.netlify/functions/powerbi-sales', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'manual_create', manual_amounts: amounts })
-      });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || 'Failed');
-      setFeedback(json.message || 'Created transactions');
+      if (!salesCategoryId) throw new Error('Sales category not found. Create/enable category with code SALES.');
+      const sunday = lastSunday;
+      const rows: any[] = [];
+      for (const [pbiName, siteId] of Object.entries(config.site_map)) {
+        const amt = parseFloat(manual[pbiName] || '');
+        if (siteId && !isNaN(amt) && amt > 0) {
+          rows.push({
+            transaction_date: sunday,
+            site_id: siteId,
+            category_id: salesCategoryId,
+            supplier_id: null,
+            invoice_number: null,
+            invoice_reference: null,
+            amount: amt,
+            notes: 'PowerBI weekly sales (manual)',
+            updated_at: new Date().toISOString(),
+          });
+        }
+      }
+      if (rows.length === 0) throw new Error('Enter at least one amount and map sites.');
+      const { error } = await supabase.from('transactions').insert(rows);
+      if (error) throw new Error(error.message);
+      setFeedback(`Created ${rows.length} sales transaction(s) for ${sunday}.`);
+      setManual({});
     } catch (e: any) {
       setFeedback(e.message || 'Failed to create');
     } finally {
