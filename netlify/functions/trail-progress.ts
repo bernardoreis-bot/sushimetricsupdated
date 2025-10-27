@@ -6,19 +6,36 @@ export const handler = async (event: any) => {
   try {
     const account = (event.queryStringParameters?.account || '').toLowerCase();
     const map: Record<string, { email?: string; pass?: string }> = {
-      allerton: {
-        email: process.env.TRAIL_ALLERTON_EMAIL,
-        pass: process.env.TRAIL_ALLERTON_PASSWORD,
-      },
-      sefton: {
-        email: process.env.TRAIL_SEFTON_EMAIL,
-        pass: process.env.TRAIL_SEFTON_PASSWORD,
-      },
-      oldswan: {
-        email: process.env.TRAIL_OLDSWAN_EMAIL,
-        pass: process.env.TRAIL_OLDSWAN_PASSWORD,
-      }
+      allerton: { email: process.env.TRAIL_ALLERTON_EMAIL, pass: process.env.TRAIL_ALLERTON_PASSWORD },
+      sefton:   { email: process.env.TRAIL_SEFTON_EMAIL,   pass: process.env.TRAIL_SEFTON_PASSWORD },
+      oldswan:  { email: process.env.TRAIL_OLDSWAN_EMAIL,  pass: process.env.TRAIL_OLDSWAN_PASSWORD },
     };
+
+    // If envs missing, try Supabase app_settings: key 'trail_credentials'
+    if (!map.allerton.email || !map.sefton.email || !map.oldswan.email) {
+      const { createClient } = await import('@supabase/supabase-js');
+      const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '';
+      const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+      if (SUPABASE_URL && SERVICE_KEY) {
+        const admin = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
+        const { data } = await admin
+          .from('app_settings')
+          .select('setting_value')
+          .eq('setting_key', 'trail_credentials')
+          .maybeSingle();
+        try {
+          const jc = data?.setting_value ? JSON.parse(data.setting_value) : null;
+          if (jc) {
+            map.allerton.email = map.allerton.email || jc?.allerton?.email;
+            map.allerton.pass  = map.allerton.pass  || jc?.allerton?.password;
+            map.sefton.email   = map.sefton.email   || jc?.sefton?.email;
+            map.sefton.pass    = map.sefton.pass    || jc?.sefton?.password;
+            map.oldswan.email  = map.oldswan.email  || jc?.oldswan?.email;
+            map.oldswan.pass   = map.oldswan.pass   || jc?.oldswan?.password;
+          }
+        } catch {}
+      }
+    }
     if (!map[account]) {
       return { statusCode: 400, body: JSON.stringify({ error: 'Invalid account. Use allerton|sefton|oldswan' }) };
     }

@@ -1,7 +1,27 @@
 export const handler = async () => {
   try {
-    const email = process.env.ATTENSI_EMAIL;
-    const pass = process.env.ATTENSI_PASSWORD;
+    let email = process.env.ATTENSI_EMAIL;
+    let pass = process.env.ATTENSI_PASSWORD;
+    if (!email) {
+      try {
+        const { createClient } = await import('@supabase/supabase-js');
+        const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '';
+        const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+        if (SUPABASE_URL && SERVICE_KEY) {
+          const admin = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
+          const { data } = await admin
+            .from('app_settings')
+            .select('setting_value')
+            .eq('setting_key', 'attensi_credentials')
+            .maybeSingle();
+          const jc = data?.setting_value ? JSON.parse(data.setting_value) : null;
+          if (jc) {
+            email = email || jc.email;
+            pass = pass || jc.password;
+          }
+        }
+      } catch {}
+    }
     if (!email || !pass) {
       return { statusCode: 400, body: JSON.stringify({ error: 'Missing ATTENSI_EMAIL/ATTENSI_PASSWORD in Netlify env.' }) };
     }

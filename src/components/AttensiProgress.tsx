@@ -1,4 +1,5 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { supabase } from '../lib/supabase';
 
 const ATTENSI_URL = 'https://admin.attensi.com/yo/dashboard';
 
@@ -9,6 +10,39 @@ export default function AttensiProgress() {
   const [img, setImg] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [attEmail, setAttEmail] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [saveMsg, setSaveMsg] = useState<string | null>(null);
+
+  useEffect(() => { loadEmail(); }, []);
+
+  const loadEmail = async () => {
+    const { data } = await supabase
+      .from('app_settings')
+      .select('setting_value')
+      .eq('setting_key', 'attensi_credentials')
+      .maybeSingle();
+    try {
+      const v = data?.setting_value ? JSON.parse(data.setting_value) : null;
+      if (v?.email) setAttEmail(v.email);
+    } catch {}
+  };
+
+  const saveEmail = async () => {
+    setSaving(true); setSaveMsg(null);
+    try {
+      const payload: any = { setting_key: 'attensi_credentials', setting_value: JSON.stringify({ email: attEmail }), updated_at: new Date().toISOString() };
+      const { data } = await supabase
+        .from('app_settings')
+        .select('id')
+        .eq('setting_key', 'attensi_credentials')
+        .maybeSingle();
+      if (data?.id) await supabase.from('app_settings').update(payload).eq('id', data.id);
+      else await supabase.from('app_settings').insert([payload]);
+      setSaveMsg('Saved');
+      setTimeout(() => setSaveMsg(null), 2000);
+    } finally { setSaving(false); }
+  };
 
   const refresh = () => {
     if (iframeRef.current) {
