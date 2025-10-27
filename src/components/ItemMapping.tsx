@@ -46,6 +46,10 @@ export default function ItemMapping() {
   const [selectedMappings, setSelectedMappings] = useState<Set<string>>(new Set());
   const [showBulkActions, setShowBulkActions] = useState(false);
   const [bulkCategory, setBulkCategory] = useState('Ambient');
+  const [categories, setCategories] = useState<string[]>(['Ambient', 'Chilled', 'Frozen', 'Packaging', 'Cleaning', 'Other']);
+  const [manageCategoriesOpen, setManageCategoriesOpen] = useState(false);
+  const [newCategory, setNewCategory] = useState('');
+  const [bulkParsedCategory, setBulkParsedCategory] = useState('');
   const [formData, setFormData] = useState({
     supplier_id: '',
     supplier_product_code: '',
@@ -60,6 +64,7 @@ export default function ItemMapping() {
     loadSuppliers();
     loadProducts();
     loadMappings();
+    loadCategorySettings();
   }, []);
 
   const loadSuppliers = async () => {
@@ -91,6 +96,70 @@ export default function ItemMapping() {
       .order('created_at', { ascending: false });
 
     if (data) setMappings(data as any);
+  };
+
+  const loadCategorySettings = async () => {
+    const { data } = await supabase
+      .from('app_settings')
+      .select('id, setting_value')
+      .eq('setting_key', 'item_mapping_categories')
+      .maybeSingle();
+    try {
+      const list = data?.setting_value ? JSON.parse(data.setting_value) : null;
+      if (Array.isArray(list) && list.every((x) => typeof x === 'string')) {
+        setCategories(list);
+        if (!list.includes(bulkCategory)) setBulkCategory(list[0] || 'Ambient');
+        if (!list.includes(bulkParsedCategory)) setBulkParsedCategory(list[0] || 'Ambient');
+      }
+    } catch {}
+  };
+
+  const saveCategorySettings = async (list: string[]) => {
+    const { data } = await supabase
+      .from('app_settings')
+      .select('id')
+      .eq('setting_key', 'item_mapping_categories')
+      .maybeSingle();
+    if (data?.id) {
+      await supabase
+        .from('app_settings')
+        .update({ setting_value: JSON.stringify(list), updated_at: new Date().toISOString() })
+        .eq('id', data.id);
+    } else {
+      await supabase
+        .from('app_settings')
+        .insert([{ setting_key: 'item_mapping_categories', setting_value: JSON.stringify(list), updated_at: new Date().toISOString() }]);
+    }
+  };
+
+  const addCategoryLocal = async () => {
+    const name = newCategory.trim();
+    if (!name) return;
+    if (categories.includes(name)) {
+      setNewCategory('');
+      return;
+    }
+    const list = [...categories, name];
+    setCategories(list);
+    await saveCategorySettings(list);
+    setNewCategory('');
+    if (!bulkCategory) setBulkCategory(name);
+    if (!bulkParsedCategory) setBulkParsedCategory(name);
+  };
+
+  const removeCategoryLocal = async (name: string) => {
+    if (categories.length <= 1) return;
+    const list = categories.filter((c) => c !== name);
+    setCategories(list);
+    await saveCategorySettings(list);
+    const fallback = list[0] || 'Ambient';
+    if (bulkCategory === name) setBulkCategory(fallback);
+    if (bulkParsedCategory === name) setBulkParsedCategory(fallback);
+    const updated = new Map(itemCategories);
+    for (const [idx, cat] of updated.entries()) {
+      if (cat === name) updated.set(idx, fallback);
+    }
+    setItemCategories(updated);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -181,10 +250,15 @@ export default function ItemMapping() {
     try {
       const items = await parseInvoiceLineItems(file);
       setParsedItems(items);
-      setSelectedItems(new Set(items.map((_, i) => i)));
+      const unmappedIdx: number[] = items
+        .map((it, i) => ({ it, i }))
+        .filter(({ it }) => !mappings.some(m => m.supplier_product_code.toLowerCase() === it.productCode.toLowerCase()))
+        .map(({ i }) => i);
+      setSelectedItems(new Set(unmappedIdx));
 
       const defaultCategories = new Map<number, string>();
-      items.forEach((_, i) => defaultCategories.set(i, 'Ambient'));
+      const def = categories[0] || 'Ambient';
+      items.forEach((_, i) => defaultCategories.set(i, def));
       setItemCategories(defaultCategories);
 
       const unmapped = items.filter(item => {
@@ -195,7 +269,7 @@ export default function ItemMapping() {
       setUnmappedItems(unmapped);
 
       setShowBulkUpload(true);
-      alert(`Found ${items.length} items (${unmapped.length} unmapped)`);
+      alert(`Found ${items.length} items (${unmapped.length} unmapped). Default selected: unmapped only.`);
     } catch (error) {
       console.error('Error parsing invoice:', error);
       alert('Failed to parse invoice');
@@ -321,7 +395,6 @@ export default function ItemMapping() {
     return matchesSearch && matchesSupplier;
   });
 
-  const categories = ['Ambient', 'Chilled', 'Frozen', 'Packaging', 'Cleaning', 'Other'];
   const units = ['CASE', 'SINGLE', 'KG', 'LITER', 'PACK', 'BOX'];
 
   return (
@@ -428,7 +501,7 @@ export default function ItemMapping() {
               <label className="text-sm font-medium text-gray-700">
                 Select Items to Map ({selectedItems.size} selected)
               </label>
-              <div className="flex gap-2">
+              <div className="flex gap-2 items-center">
                 <button
                   onClick={() => setSelectedItems(new Set(parsedItems.map((_, i) => i)))}
                   className="text-sm text-blue-600 hover:text-blue-800"
@@ -449,14 +522,78 @@ export default function ItemMapping() {
                 >
                   Clear All
                 </button>
+                <div className="w-px h-4 bg-gray-300" />
+                <select
+                  value={bulkParsedCategory || (categories[0] || 'Ambient')}
+                  onChange={(e) => setBulkParsedCategory(e.target.value)}
+                  className="text-sm px-2 py-1 border border-gray-300 rounded"
+                >
+                  {categories.map((c) => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
+                </select>
+                <button
+                  onClick={() => {
+                    const chosen = bulkParsedCategory || (categories[0] || 'Ambient');
+                    const updated = new Map(itemCategories);
+                    Array.from(selectedItems).forEach((idx) => updated.set(idx, chosen));
+                    setItemCategories(updated);
+                  }}
+                  className="text-sm text-blue-600 hover:text-blue-800"
+                >
+                  Apply Category to Selected
+                </button>
+                <div className="w-px h-4 bg-gray-300" />
+                <button
+                  onClick={() => setManageCategoriesOpen(!manageCategoriesOpen)}
+                  className="text-sm text-gray-700 hover:text-gray-900"
+                >
+                  {manageCategoriesOpen ? 'Hide Categories' : 'Manage Categories'}
+                </button>
               </div>
             </div>
+
+            {manageCategoriesOpen && (
+              <div className="mb-3 border border-gray-200 rounded-lg p-3 bg-gray-50">
+                <div className="flex gap-2 items-center">
+                  <input
+                    type="text"
+                    value={newCategory}
+                    onChange={(e) => setNewCategory(e.target.value)}
+                    placeholder="New category"
+                    className="px-2 py-1 border border-gray-300 rounded"
+                  />
+                  <button onClick={addCategoryLocal} className="px-3 py-1 bg-blue-600 text-white rounded">Add</button>
+                </div>
+                <div className="flex flex-wrap gap-2 mt-3">
+                  {categories.map((c) => (
+                    <span key={c} className="inline-flex items-center gap-2 px-2 py-1 rounded-full bg-white border text-sm">
+                      <span>{c}</span>
+                      <button onClick={() => removeCategoryLocal(c)} className="text-red-600">×</button>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div className="border border-gray-200 rounded-lg max-h-96 overflow-y-auto">
               <table className="w-full">
                 <thead className="bg-gray-50 sticky top-0">
                   <tr>
-                    <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">Select</th>
+                    <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">
+                      <input
+                        type="checkbox"
+                        checked={selectedItems.size === parsedItems.length && parsedItems.length > 0}
+                        onChange={() => {
+                          if (selectedItems.size === parsedItems.length) {
+                            setSelectedItems(new Set());
+                          } else {
+                            setSelectedItems(new Set(parsedItems.map((_, i) => i)));
+                          }
+                        }}
+                        className="w-4 h-4 text-orange-500 rounded focus:ring-orange-500"
+                      />
+                    </th>
                     <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">Code</th>
                     <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">Product Name</th>
                     <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">Unit Price</th>
