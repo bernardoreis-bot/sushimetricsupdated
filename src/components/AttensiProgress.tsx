@@ -6,6 +6,9 @@ export default function AttensiProgress() {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [isFs, setIsFs] = useState(false);
+  const [img, setImg] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const refresh = () => {
     if (iframeRef.current) {
@@ -30,6 +33,21 @@ export default function AttensiProgress() {
     window.open(ATTENSI_URL, '_blank', 'noopener,noreferrer');
   };
 
+  const loadSnapshot = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch('/.netlify/functions/attensi-progress');
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Failed to load');
+      setImg(json.image);
+    } catch (e: any) {
+      setError(e.message || 'Error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="p-6 md:p-8">
       <div className="mb-4 flex items-center justify-between">
@@ -41,6 +59,7 @@ export default function AttensiProgress() {
           <button onClick={refresh} className="px-3 py-2 border rounded">Refresh</button>
           <button onClick={toggleFullscreen} className="px-3 py-2 border rounded">{isFs ? 'Exit Fullscreen' : 'Fullscreen'}</button>
           <button onClick={openNew} className="px-3 py-2 border rounded">Open</button>
+          <button onClick={loadSnapshot} disabled={loading} className="px-3 py-2 border rounded">{loading ? 'Loading…' : 'Load Snapshot'}</button>
         </div>
       </div>
 
@@ -53,6 +72,18 @@ export default function AttensiProgress() {
           style={{ height: '80vh' }}
           allowFullScreen
         />
+      </div>
+
+      <div className="mt-4 bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+        <div className="px-4 py-2 border-b border-gray-200 font-medium">Snapshot (server-rendered)</div>
+        <div className="min-h-[300px] flex items-center justify-center bg-gray-50">
+          {img ? (
+            <img src={img} alt="Attensi snapshot" className="max-w-full" />
+          ) : (
+            <div className="text-gray-500 text-sm">Click Load Snapshot to fetch a live view</div>
+          )}
+        </div>
+        {error && <div className="px-4 py-2 text-sm text-red-600">{error}</div>}
       </div>
     </div>
   );

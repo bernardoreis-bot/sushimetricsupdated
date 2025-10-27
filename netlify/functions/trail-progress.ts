@@ -1,0 +1,77 @@
+// Serverless screenshot for Trail accounts
+// Usage: GET /.netlify/functions/trail-progress?account=allerton|sefton|oldswan
+// Returns: { image: "data:image/png;base64,...", ts: ISOString }
+
+export const handler = async (event: any) => {
+  try {
+    const account = (event.queryStringParameters?.account || '').toLowerCase();
+    const map: Record<string, { email?: string; pass?: string }> = {
+      allerton: {
+        email: process.env.TRAIL_ALLERTON_EMAIL,
+        pass: process.env.TRAIL_ALLERTON_PASSWORD,
+      },
+      sefton: {
+        email: process.env.TRAIL_SEFTON_EMAIL,
+        pass: process.env.TRAIL_SEFTON_PASSWORD,
+      },
+      oldswan: {
+        email: process.env.TRAIL_OLDSWAN_EMAIL,
+        pass: process.env.TRAIL_OLDSWAN_PASSWORD,
+      }
+    };
+    if (!map[account]) {
+      return { statusCode: 400, body: JSON.stringify({ error: 'Invalid account. Use allerton|sefton|oldswan' }) };
+    }
+
+    const { email, pass } = map[account];
+    if (!email || !pass) {
+      return { statusCode: 400, body: JSON.stringify({ error: `Missing credentials for ${account}. Set TRAIL_* env vars in Netlify.` }) };
+    }
+
+    const chromium = await import('chrome-aws-lambda');
+    const puppeteer = await import('puppeteer-core');
+    const browser = await puppeteer.launch({
+      args: chromium.args,
+      defaultViewport: { width: 1440, height: 900 },
+      executablePath: await chromium.executablePath,
+      headless: 'new' as any,
+    });
+
+    try {
+      const page = await browser.newPage();
+      page.setDefaultTimeout(12000);
+      const url = 'https://web.trailapp.com/trail#/';
+      await page.goto(url, { waitUntil: 'networkidle2' });
+
+      // If redirected to login, try to fill
+      try {
+        const emailSel = 'input[type="email"], input[name="email"], input#email, input[name="username"], input#username';
+        const passSel = 'input[type="password"], input[name="password"], input#password';
+        const hasEmail = await page.$(emailSel);
+        const hasPass = await page.$(passSel);
+        if (hasEmail && hasPass) {
+          await page.click(emailSel);
+          await page.keyboard.type(email);
+          await page.click(passSel);
+          await page.keyboard.type(pass);
+          // Try submit
+          const submitBtn = await page.$('button[type="submit"], button:not([type])');
+          if (submitBtn) await submitBtn.click();
+          else {
+            await page.keyboard.press('Enter');
+          }
+          await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 10000 }).catch(() => {});
+        }
+      } catch {}
+
+      await page.waitForTimeout(1500);
+      const buf = await page.screenshot({ type: 'png', fullPage: true });
+      const base64 = buf.toString('base64');
+      return { statusCode: 200, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }, body: JSON.stringify({ image: `data:image/png;base64,${base64}` , ts: new Date().toISOString() }) };
+    } finally {
+      await browser.close();
+    }
+  } catch (err: any) {
+    return { statusCode: 500, body: JSON.stringify({ error: err.message || 'Internal error' }) };
+  }
+};
