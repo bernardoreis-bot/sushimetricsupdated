@@ -51,6 +51,16 @@ export default function TrailProgress() {
     setLoading({ ...loading, [key]: true });
     setError({ ...error, [key]: null });
     try {
+      // Check if running locally (development mode)
+      if (import.meta.env.DEV) {
+        // Mock response for local development
+        await new Promise(resolve => setTimeout(resolve, 2000)); // Simulate loading
+        const mockImage = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='; // 1x1 transparent pixel
+        setImages({ ...images, [key]: mockImage });
+        return;
+      }
+
+      // Production: call Netlify function
       const res = await fetch(`/.netlify/functions/trail-progress?account=${key}`);
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || 'Failed to fetch');
@@ -85,7 +95,7 @@ export default function TrailProgress() {
     <div className="p-6 md:p-8">
       <div className="mb-6">
         <h1 className="text-2xl md:text-3xl font-bold text-gray-900">Trail Progress</h1>
-        <p className="text-gray-500 mt-1">View each account via secure server-side snapshots.</p>
+        <p className="text-gray-500 mt-1">View each account via secure server-side snapshots.{import.meta.env.DEV && <span className="ml-2 px-2 py-1 bg-yellow-100 text-yellow-800 text-xs rounded">DEV MODE</span>}</p>
       </div>
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 mb-6">
         <h2 className="text-lg font-semibold text-gray-900 mb-2">Trail Credentials</h2>
