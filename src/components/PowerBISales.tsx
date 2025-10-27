@@ -79,31 +79,7 @@ export default function PowerBISales() {
     setTimeout(() => setFeedback(null), 2000);
   };
 
-  const triggerExtract = async () => {
-    setLoading(true);
-    setFeedback(null);
-    try {
-      const res = await fetch('/.netlify/functions/powerbi-sales', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'extract_latest', manual_override: null })
-      });
-      const json = await res.json();
-      if (!res.ok) {
-        const hint = json?.error?.includes('OPENAI') || json?.error?.toLowerCase?.().includes('openai')
-          ? 'Missing or invalid OPENAI_API_KEY on Netlify.'
-          : json?.error?.includes('SUPABASE') || json?.error?.toLowerCase?.().includes('supabase')
-          ? 'Missing SUPABASE_SERVICE_ROLE_KEY on Netlify.'
-          : '';
-        throw new Error((json.error || 'Failed') + (hint ? ` — ${hint}` : ''));
-      }
-      setFeedback(json.message || 'Extracted and created sales transactions');
-    } catch (e: any) {
-      setFeedback(e.message || 'Failed to trigger');
-    } finally {
-      setLoading(false);
-    }
-  };
+  
 
   const triggerManual = async () => {
     setLoading(true);
@@ -173,7 +149,7 @@ export default function PowerBISales() {
 
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 mb-6">
         <h2 className="text-lg font-semibold text-gray-900 mb-2">Site Mapping</h2>
-        <p className="text-sm text-gray-600 mb-3">Enter the exact Power BI "Site" label (top-right of the report), then map it to your Sushi Metrics site. The button reads the CURRENT site from the embedded view and extracts the Last 7 Days amount.</p>
+        <p className="text-sm text-gray-600 mb-3">Enter the exact Power BI "Site" label (top-right of the report), then map it to your Sushi Metrics site.</p>
         <div className="grid grid-cols-1 gap-3">
           {Object.entries(config.site_map).map(([pbiName, siteId]) => (
             <div key={pbiName} className="grid grid-cols-1 md:grid-cols-12 gap-2 items-center">
@@ -204,8 +180,6 @@ export default function PowerBISales() {
         <div className="mt-3 flex gap-2 flex-wrap">
           <button onClick={addMappingRow} className="px-4 py-2 border rounded">Add Row</button>
           <button onClick={saveConfig} className="px-4 py-2 bg-blue-600 text-white rounded">Save Config</button>
-          <button onClick={triggerExtract} disabled={loading} className="px-4 py-2 bg-orange-600 text-white rounded disabled:opacity-60">{loading ? 'Reading…' : 'Read Current Site (Last 7 Days)'}
-          </button>
         </div>
         {feedback && <div className="mt-2 text-sm text-gray-700">{feedback}</div>}
       </div>
