@@ -1,0 +1,33 @@
+{
+  "name": "sushimetrics-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/main.js",
+  "scripts": {
+    "dev": "tsc -p tsconfig.json --watch & electron .",
+    "start": "electron .",
+    "build": "tsc -p tsconfig.json && electron-builder -w",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "dependencies": {
+    "electron-store": "^8.1.0",
+    "keytar": "^7.9.0"
+  },
+  "devDependencies": {
+    "electron": "^30.0.0",
+    "electron-builder": "^24.13.3",
+    "typescript": "^5.6.3"
+  },
+  "build": {
+    "appId": "com.sushimetrics.desktop",
+    "files": [
+      "dist/**/*",
+      "src/renderer/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis",
+      "artifactName": "SushiMetrics-Setup-${version}.exe"
+    }
+  }
+}

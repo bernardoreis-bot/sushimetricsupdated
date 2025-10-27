@@ -1,0 +1,112 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Sushi Metrics Desktop – Control</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 16px; }
+    h1 { margin: 0 0 8px 0; }
+    .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin-top: 12px; }
+    .card { border: 1px solid #e5e7eb; border-radius: 10px; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
+    .card .head { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; border-bottom: 1px solid #e5e7eb; }
+    .card .body { padding: 12px; }
+    label { display:block; font-size:12px; color:#374151; margin-bottom:4px; }
+    input { width:100%; padding:8px 10px; border:1px solid #d1d5db; border-radius:8px; }
+    .actions { display:flex; gap:8px; flex-wrap:wrap; margin-top: 8px; }
+    button { padding:8px 10px; border:1px solid #d1d5db; background:#fff; border-radius:8px; cursor:pointer; }
+    button.primary { background:#f97316; color:#fff; border-color:#ea580c; }
+    small.muted { color:#6b7280; }
+  </style>
+</head>
+<body>
+  <h1>Sushi Metrics Desktop</h1>
+  <div class="row">
+    <div class="card" id="c-allerton">
+      <div class="head"><strong>Trail – Allerton Road</strong><div class="actions"><button onclick="openW('A')">Open/Focus</button><button onclick="refreshW('A')">Refresh</button><button onclick="logoutW('A')">Logout</button><button onclick="closeW('A')">Close</button></div></div>
+      <div class="body">
+        <label>Email</label>
+        <input id="a-email" type="email" placeholder="user@example.com">
+        <label style="margin-top:8px">Password</label>
+        <input id="a-pass" type="password" placeholder="••••••••">
+        <div class="actions"><button class="primary" onclick="save('sushimetrics-trail-allerton','a-email','a-pass')">Save</button></div>
+        <small class="muted">Saved to Windows Credential Manager.</small>
+      </div>
+    </div>
+    <div class="card" id="c-sefton">
+      <div class="head"><strong>Trail – Sefton Park</strong><div class="actions"><button onclick="openW('S')">Open/Focus</button><button onclick="refreshW('S')">Refresh</button><button onclick="logoutW('S')">Logout</button><button onclick="closeW('S')">Close</button></div></div>
+      <div class="body">
+        <label>Email</label>
+        <input id="s-email" type="email" placeholder="user@example.com">
+        <label style="margin-top:8px">Password</label>
+        <input id="s-pass" type="password" placeholder="••••••••">
+        <div class="actions"><button class="primary" onclick="save('sushimetrics-trail-sefton','s-email','s-pass')">Save</button></div>
+        <small class="muted">Saved to Windows Credential Manager.</small>
+      </div>
+    </div>
+    <div class="card" id="c-oldswan">
+      <div class="head"><strong>Trail – Old Swan</strong><div class="actions"><button onclick="openW('O')">Open/Focus</button><button onclick="refreshW('O')">Refresh</button><button onclick="logoutW('O')">Logout</button><button onclick="closeW('O')">Close</button></div></div>
+      <div class="body">
+        <label>Email</label>
+        <input id="o-email" type="email" placeholder="user@example.com">
+        <label style="margin-top:8px">Password</label>
+        <input id="o-pass" type="password" placeholder="••••••••">
+        <div class="actions"><button class="primary" onclick="save('sushimetrics-trail-oldswan','o-email','o-pass')">Save</button></div>
+        <small class="muted">Saved to Windows Credential Manager.</small>
+      </div>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="card" style="grid-column: 1 / -1">
+      <div class="head"><strong>Attensi Dashboard</strong><div class="actions"><button onclick="openA()">Open/Focus</button><button onclick="refreshA()">Refresh</button><button onclick="logoutA()">Logout</button><button onclick="closeA()">Close</button></div></div>
+      <div class="body">
+        <label>Email</label>
+        <input id="att-email" type="email" placeholder="user@example.com">
+        <label style="margin-top:8px">Password</label>
+        <input id="att-pass" type="password" placeholder="••••••••">
+        <div class="actions"><button class="primary" onclick="save('sushimetrics-attensi','att-email','att-pass')">Save</button></div>
+        <small class="muted">Saved to Windows Credential Manager. Open once, log in if prompted; auto-login will run next time.</small>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const d = window.desktop;
+    const ge = (id) => document.getElementById(id);
+
+    async function save(service, emailId, passId) {
+      const email = ge(emailId).value.trim();
+      const pass = ge(passId).value;
+      await d.setCredential(service, email, pass);
+      alert('Saved');
+    }
+
+    function openW(key) { d.openWindow(key); }
+    function refreshW(key) { d.refreshWindow(key); }
+    function closeW(key) { d.closeWindow(key); }
+    function logoutW(key) { d.logoutWindow(key); }
+
+    function openA() { d.openWindow('attensi'); }
+    function refreshA() { d.refreshWindow('attensi'); }
+    function closeA() { d.closeWindow('attensi'); }
+    function logoutA() { d.logoutWindow('attensi'); }
+
+    async function loadCreds() {
+      const map = {
+        'sushimetrics-trail-allerton': ['a-email','a-pass'],
+        'sushimetrics-trail-sefton': ['s-email','s-pass'],
+        'sushimetrics-trail-oldswan': ['o-email','o-pass'],
+        'sushimetrics-attensi': ['att-email','att-pass']
+      };
+      for (const service of Object.keys(map)) {
+        const cred = await d.getCredential(service);
+        if (cred) {
+          ge(map[service][0]).value = cred.email || '';
+          ge(map[service][1]).value = cred.password || '';
+        }
+      }
+    }
+    loadCreds();
+  </script>
+</body>
+</html>
