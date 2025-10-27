@@ -18,6 +18,7 @@ import ContactUs from './components/ContactUs';
 import DashboardCustomization from './components/DashboardCustomization';
 import StockAnalysis from './components/StockAnalysis';
 import PeopleTrackerEnhanced from './components/PeopleTrackerEnhanced';
+import TrailProgress from './components/TrailProgress';
 
 function App() {
   const [currentPage, setCurrentPage] = useState('dashboard');
@@ -137,6 +138,7 @@ function App() {
         {currentPage === 'itemmapping' && <ItemMapping />}
         {currentPage === 'stockanalysis' && <StockAnalysis />}
         {currentPage === 'people' && <PeopleTrackerEnhanced />}
+        {currentPage === 'trail' && <TrailProgress />}
         {currentPage === 'categories' && <TransactionCategories />}
         {currentPage === 'sites' && <Sites />}
         {currentPage === 'suppliers' && <Suppliers />}
