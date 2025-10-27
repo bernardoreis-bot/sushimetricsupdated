@@ -1,5 +1,5 @@
 import type { Handler } from '@netlify/functions';
-import { runExtractLatest, createSalesTransactions, getLastSundayISO, saveAudit } from './_powerbiSales';
+import { runExtractCurrentView, createSalesTransactions, getLastSundayISO, saveAudit } from './_powerbiSales';
 
 export const handler: Handler = async (event) => {
   try {
@@ -17,9 +17,9 @@ export const handler: Handler = async (event) => {
       return { statusCode: 200, body: JSON.stringify({ message: 'Sales transactions created', sundayISO }) };
     }
 
-    // default: extract latest via OpenAI Vision
-    const { bySiteId, missing } = await runExtractLatest('manual-trigger');
-    return { statusCode: 200, body: JSON.stringify({ message: 'Extracted and created transactions', created: bySiteId, missing }) };
+    // default: read current embedded view (current site) Last 7 Days and create transaction
+    const { bySiteId, extracted } = await runExtractCurrentView('manual-trigger');
+    return { statusCode: 200, body: JSON.stringify({ message: 'Read current site and created transactions', created: bySiteId, extracted }) };
   } catch (err: any) {
     return { statusCode: 500, body: JSON.stringify({ error: err.message || 'Internal error' }) };
   }

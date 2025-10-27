@@ -140,6 +140,24 @@ export default function PowerBISales() {
     }
   };
 
+  const addMappingRow = () => {
+    const key = 'New PBI Site';
+    if (config.site_map[key] !== undefined) return;
+    setConfig({ ...config, site_map: { ...config.site_map, [key]: '' } });
+  };
+
+  const removeMappingRow = (pbiName: string) => {
+    const { [pbiName]: _, ...rest } = config.site_map;
+    setConfig({ ...config, site_map: rest });
+  };
+
+  const renamePbiName = (oldName: string, newName: string) => {
+    if (!newName || oldName === newName) return;
+    const { [oldName]: val, ...rest } = config.site_map;
+    const next = { ...rest, [newName]: val } as any;
+    setConfig({ ...config, site_map: next });
+  };
+
   return (
     <div className="p-8">
       <div className="mb-6">
@@ -155,32 +173,45 @@ export default function PowerBISales() {
 
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 mb-6">
         <h2 className="text-lg font-semibold text-gray-900 mb-2">Site Mapping</h2>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          {Object.keys(config.site_map).map((pbiName) => (
-            <div key={pbiName} className="flex flex-col gap-1">
-              <label className="text-sm text-gray-700">{pbiName} → Sushi Metrics site</label>
-              <select
-                value={config.site_map[pbiName] || ''}
-                onChange={(e) => setConfig({ ...config, site_map: { ...config.site_map, [pbiName]: e.target.value } })}
-                className="px-3 py-2 border rounded"
-              >
-                <option value="">Select site</option>
-                {sites.map(s => (
-                  <option key={s.id} value={s.id}>{s.name}</option>
-                ))}
-              </select>
+        <p className="text-sm text-gray-600 mb-3">Enter the exact Power BI "Site" label (top-right of the report), then map it to your Sushi Metrics site. The button reads the CURRENT site from the embedded view and extracts the Last 7 Days amount.</p>
+        <div className="grid grid-cols-1 gap-3">
+          {Object.entries(config.site_map).map(([pbiName, siteId]) => (
+            <div key={pbiName} className="grid grid-cols-1 md:grid-cols-12 gap-2 items-center">
+              <input
+                className="md:col-span-5 px-3 py-2 border rounded"
+                value={pbiName}
+                onChange={(e) => renamePbiName(pbiName, e.target.value)}
+                placeholder="Power BI site label"
+              />
+              <div className="md:col-span-5">
+                <select
+                  value={siteId || ''}
+                  onChange={(e) => setConfig({ ...config, site_map: { ...config.site_map, [pbiName]: e.target.value } })}
+                  className="w-full px-3 py-2 border rounded"
+                >
+                  <option value="">Select site</option>
+                  {sites.map(s => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="md:col-span-2">
+                <button onClick={() => removeMappingRow(pbiName)} className="px-3 py-2 border rounded w-full">Remove</button>
+              </div>
             </div>
           ))}
         </div>
-        <div className="mt-3 flex gap-2">
+        <div className="mt-3 flex gap-2 flex-wrap">
+          <button onClick={addMappingRow} className="px-4 py-2 border rounded">Add Row</button>
           <button onClick={saveConfig} className="px-4 py-2 bg-blue-600 text-white rounded">Save Config</button>
-          <button onClick={triggerExtract} disabled={loading} className="px-4 py-2 bg-orange-600 text-white rounded disabled:opacity-60">{loading ? 'Running…' : 'Run Extract Now'}</button>
+          <button onClick={triggerExtract} disabled={loading} className="px-4 py-2 bg-orange-600 text-white rounded disabled:opacity-60">{loading ? 'Reading…' : 'Read Current Site (Last 7 Days)'}
+          </button>
         </div>
         {feedback && <div className="mt-2 text-sm text-gray-700">{feedback}</div>}
       </div>
 
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
-        <h2 className="text-lg font-semibold text-gray-900 mb-2">Manual Override (last Sunday {lastSunday})</h2>
+        <h2 className="text-lg font-semibold text-gray-900 mb-2">Quick Add Sales Transaction (Sunday {lastSunday})</h2>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           {Object.keys(config.site_map).map((pbiName) => (
             <div key={pbiName} className="flex flex-col gap-1">
@@ -197,7 +228,7 @@ export default function PowerBISales() {
           ))}
         </div>
         <div className="mt-3">
-          <button onClick={triggerManual} disabled={loading} className="px-4 py-2 bg-green-600 text-white rounded disabled:opacity-60">Create Sales Transactions</button>
+          <button onClick={triggerManual} disabled={loading} className="px-4 py-2 bg-green-600 text-white rounded disabled:opacity-60">Quick Add Sales Transaction</button>
         </div>
       </div>
     </div>

@@ -110,6 +110,34 @@ async function extractSalesFromScreenshot(base64Png: string, siteNames: string[]
   try { return JSON.parse(text); } catch { throw new Error('Model did not return JSON'); }
 }
 
+async function extractCurrentViewFromScreenshot(base64Png: string): Promise<{ site_name: string; last7days_amount: number }> {
+  if (!OPENAI_API_KEY) throw new Error('Missing OPENAI_API_KEY');
+  const prompt = [
+    {
+      role: 'system',
+      content: 'You read a Power BI SALES dashboard screenshot. Extract the selected Site name (top-right Site filter value) and the numeric total for "Last 7 Days" card in GBP. Return JSON like {"site_name":"Allerton Road","last7days_amount":4673.00}. If not visible, return zero amount and empty site.'
+    },
+    {
+      role: 'user',
+      content: [
+        { type: 'text', text: 'Find the Site value at the top right (dropdown current selection). Also find the big KPI card labeled "Last 7 Days" and read its currency value in GBP.' },
+        { type: 'input_image', image_url: { url: `data:image/png;base64,${base64Png}` } }
+      ] as any
+    }
+  ];
+  const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${OPENAI_API_KEY}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ model: 'gpt-4o-mini', messages: prompt, temperature: 0 })
+  });
+  const json = await resp.json();
+  const text = json.choices?.[0]?.message?.content || '{}';
+  try { return JSON.parse(text); } catch { throw new Error('Model did not return JSON'); }
+}
+
 export async function createSalesTransactions(amountBySiteId: Record<string, number>, sundayISO: string, source: string) {
   const salesCatId = await getSalesCategoryId();
   const entries = Object.entries(amountBySiteId).map(([site_id, amount]) => ({
@@ -127,22 +155,20 @@ export async function createSalesTransactions(amountBySiteId: Record<string, num
   if (error) throw error;
 }
 
-export async function runExtractLatest(source: string) {
+export async function runExtractCurrentView(source: string) {
   const cfg = await loadConfig();
   const siteMap: Record<string, string> = cfg.site_map || {};
-  const pbiSiteNames = Object.keys(siteMap).filter(k => siteMap[k]);
-  if (pbiSiteNames.length === 0) throw new Error('No sites mapped in config');
   const sundayISO = getLastSundayISO();
   const png = await screenshotReport();
-  const amountsByPbiName = await extractSalesFromScreenshot(png, pbiSiteNames, sundayISO);
+  const { site_name, last7days_amount } = await extractCurrentViewFromScreenshot(png);
+  // Map extracted site name to configured site ID (case-insensitive contains)
+  const match = Object.keys(siteMap).find(k => k.toLowerCase() === (site_name || '').toLowerCase())
+    || Object.keys(siteMap).find(k => (site_name || '').toLowerCase().includes(k.toLowerCase()))
+    || Object.keys(siteMap).find(k => k.toLowerCase().includes((site_name || '').toLowerCase()));
+  const siteId = match ? siteMap[match] : undefined;
   const bySiteId: Record<string, number> = {};
-  for (const [pbiName, siteId] of Object.entries(siteMap)) {
-    if (!siteId) continue;
-    const v = Number((amountsByPbiName as any)[pbiName] || 0);
-    if (!isNaN(v) && v > 0) bySiteId[siteId] = v;
-  }
+  if (siteId && Number(last7days_amount) > 0) bySiteId[siteId] = Number(last7days_amount);
   await createSalesTransactions(bySiteId, sundayISO, source);
-  const missing: string[] = pbiSiteNames.filter(n => !(amountsByPbiName as any)[n] || Number((amountsByPbiName as any)[n]) <= 0);
-  await saveAudit({ type: 'extract', source, sundayISO, extracted: amountsByPbiName, mapped: bySiteId, missing });
-  return { bySiteId, missing };
+  await saveAudit({ type: 'extract_current', source, sundayISO, extracted: { site_name, last7days_amount }, mapped: bySiteId });
+  return { bySiteId, extracted: { site_name, last7days_amount } };
 }
