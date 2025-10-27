@@ -35,6 +35,7 @@ export default function Sidebar({ currentPage, onNavigate }: SidebarProps) {
       items: [
         { id: 'people', label: 'People Tracker', icon: Users },
         { id: 'trail', label: 'Trail Progress', icon: Users },
+        { id: 'attensi', label: 'Attensi Progress', icon: Users },
       ]
     },
     {

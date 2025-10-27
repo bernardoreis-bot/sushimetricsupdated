@@ -19,6 +19,7 @@ import DashboardCustomization from './components/DashboardCustomization';
 import StockAnalysis from './components/StockAnalysis';
 import PeopleTrackerEnhanced from './components/PeopleTrackerEnhanced';
 import TrailProgress from './components/TrailProgress';
+import AttensiProgress from './components/AttensiProgress';
 
 function App() {
   const [currentPage, setCurrentPage] = useState('dashboard');
@@ -139,6 +140,7 @@ function App() {
         {currentPage === 'stockanalysis' && <StockAnalysis />}
         {currentPage === 'people' && <PeopleTrackerEnhanced />}
         {currentPage === 'trail' && <TrailProgress />}
+        {currentPage === 'attensi' && <AttensiProgress />}
         {currentPage === 'categories' && <TransactionCategories />}
         {currentPage === 'sites' && <Sites />}
         {currentPage === 'suppliers' && <Suppliers />}
