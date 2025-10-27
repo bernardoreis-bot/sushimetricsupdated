@@ -56,7 +56,7 @@ export async function getSalesCategoryId() {
   return data?.id || null;
 }
 
-async function screenshotReport(): Promise<string> {
+async function screenshotReport(url?: string): Promise<string> {
   // Return base64 PNG
   const chromium = await import('chrome-aws-lambda');
   const puppeteer = await import('puppeteer-core');
@@ -69,7 +69,7 @@ async function screenshotReport(): Promise<string> {
   } as any);
   try {
     const page = await browser.newPage();
-    await page.goto(POWERBI_EMBED_URL, { waitUntil: 'networkidle2' });
+    await page.goto(url || POWERBI_EMBED_URL, { waitUntil: 'networkidle2' });
     await page.waitForTimeout(5000);
     const buf = await page.screenshot({ type: 'png', fullPage: true });
     return buf.toString('base64');
@@ -110,17 +110,17 @@ async function extractSalesFromScreenshot(base64Png: string, siteNames: string[]
   try { return JSON.parse(text); } catch { throw new Error('Model did not return JSON'); }
 }
 
-async function extractCurrentViewFromScreenshot(base64Png: string): Promise<{ site_name: string; last7days_amount: number }> {
+async function extractCurrentViewFromScreenshot(base64Png: string): Promise<{ site_name: string; last7days_amount: number; sunday_present?: boolean }> {
   if (!OPENAI_API_KEY) throw new Error('Missing OPENAI_API_KEY');
   const prompt = [
     {
       role: 'system',
-      content: 'You read a Power BI SALES dashboard screenshot. Extract the selected Site name (top-right Site filter value) and the numeric total for "Last 7 Days" card in GBP. Return JSON like {"site_name":"Allerton Road","last7days_amount":4673.00}. If not visible, return zero amount and empty site.'
+      content: 'You read a Power BI SALES dashboard screenshot. Extract the selected Site name (top-right Site filter value) and the numeric total for "Last 7 Days" card in GBP. Also confirm whether the Last 7 Days bar chart includes a bar for Sunday (return sunday_present true/false). Return JSON like {"site_name":"Allerton Road","last7days_amount":4673.00,"sunday_present":true}. If not visible, return zero amount and empty site.'
     },
     {
       role: 'user',
       content: [
-        { type: 'text', text: 'Find the Site value at the top right (dropdown current selection). Also find the big KPI card labeled "Last 7 Days" and read its currency value in GBP.' },
+        { type: 'text', text: 'Find the Site value at the top right (dropdown current selection). Also find the big KPI card labeled "Last 7 Days" and read its currency value in GBP. Confirm whether the bar chart below includes a Sunday bar.' },
         { type: 'input_image', image_url: { url: `data:image/png;base64,${base64Png}` } }
       ] as any
     }
@@ -171,4 +171,73 @@ export async function runExtractCurrentView(source: string) {
   await createSalesTransactions(bySiteId, sundayISO, source);
   await saveAudit({ type: 'extract_current', source, sundayISO, extracted: { site_name, last7days_amount }, mapped: bySiteId });
   return { bySiteId, extracted: { site_name, last7days_amount } };
+}
+
+async function siteIdByName(name: string): Promise<string | null> {
+  const { data } = await supabaseAdmin
+    .from('sites')
+    .select('id, name, is_active')
+    .eq('is_active', true);
+  const match = (data || []).find((s: any) => (s.name || '').toLowerCase() === name.toLowerCase());
+  return match?.id || null;
+}
+
+async function hasWeeklySalesFor(site_id: string, sundayISO: string): Promise<boolean> {
+  const { data } = await supabaseAdmin
+    .from('transactions')
+    .select('id')
+    .eq('site_id', site_id)
+    .eq('transaction_date', sundayISO)
+    .limit(1);
+  return !!(data && data.length > 0);
+}
+
+export async function runScheduledBatch(): Promise<any> {
+  const sundayISO = getLastSundayISO();
+  const { data: autoCfgRow } = await supabaseAdmin
+    .from('app_settings')
+    .select('setting_value')
+    .eq('setting_key', 'powerbi_sales_auto')
+    .maybeSingle();
+  let autoCfg: any = {};
+  try { autoCfg = autoCfgRow?.setting_value ? JSON.parse(autoCfgRow.setting_value) : {}; } catch {}
+  const embedUrls: Record<string, string> = autoCfg.embed_urls || {};
+  const sites = ['Allerton Road', 'Sefton Park', 'Old Swan'];
+  const results: any[] = [];
+  for (const siteName of sites) {
+    const site_id = await siteIdByName(siteName);
+    if (!site_id) { await saveAudit({ type: 'batch_skip', reason: 'site_not_found', siteName }); continue; }
+    const already = await hasWeeklySalesFor(site_id, sundayISO);
+    if (already) { await saveAudit({ type: 'batch_skip', reason: 'already_created', siteName, sundayISO }); continue; }
+    const url = embedUrls[siteName] || POWERBI_EMBED_URL;
+    try {
+      const png = await screenshotReport(url);
+      const { site_name, last7days_amount, sunday_present } = await extractCurrentViewFromScreenshot(png);
+      const nameOk = !site_name || site_name.toLowerCase().includes(siteName.toLowerCase()) || siteName.toLowerCase().includes((site_name || '').toLowerCase());
+      if (Number(last7days_amount) > 0 && nameOk && (sunday_present !== false)) {
+        await createSalesTransactions({ [site_id]: Number(last7days_amount) }, sundayISO, 'schedule');
+        results.push({ siteName, amount: Number(last7days_amount) });
+        await saveAudit({ type: 'batch_success', siteName, sundayISO, amount: Number(last7days_amount) });
+      } else {
+        await saveAudit({ type: 'batch_no_data', siteName, sundayISO, extracted: { site_name, last7days_amount, sunday_present } });
+      }
+    } catch (err: any) {
+      await saveAudit({ type: 'batch_error', siteName, error: err.message || String(err) });
+    }
+  }
+  // If it's Wednesday >= 18:00 UTC and some sites still missing, raise alert entries
+  const now = new Date();
+  const isWed = now.getUTCDay() === 3; // 3 = Wednesday
+  const hour = now.getUTCHours();
+  if (isWed && hour >= 18) {
+    for (const siteName of sites) {
+      const site_id = await siteIdByName(siteName);
+      if (!site_id) continue;
+      const done = await hasWeeklySalesFor(site_id, sundayISO);
+      if (!done) {
+        await saveAudit({ type: 'schedule_alert', siteName, sundayISO, message: 'Sales still missing by Wednesday 18:00 UTC' });
+      }
+    }
+  }
+  return { ok: true, results };
 }
