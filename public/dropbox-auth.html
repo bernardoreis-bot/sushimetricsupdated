@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Dropbox Authentication</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+      }
+      body {
+        margin: 0;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        background: #f7fafc;
+        color: #1a202c;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+      }
+      .card {
+        background: #ffffff;
+        padding: 32px;
+        border-radius: 16px;
+        box-shadow: 0 20px 35px rgba(15, 23, 42, 0.1);
+        max-width: 420px;
+        width: calc(100% - 32px);
+        text-align: center;
+      }
+      h1 {
+        margin: 0 0 12px;
+        font-size: 1.5rem;
+      }
+      p {
+        margin: 0;
+        color: #4a5568;
+        font-size: 0.95rem;
+        line-height: 1.5;
+      }
+      .status {
+        margin-top: 24px;
+        font-weight: 600;
+        font-size: 0.95rem;
+      }
+      .error {
+        color: #e53e3e;
+      }
+      .success {
+        color: #2f855a;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>Connecting to Dropbox…</h1>
+      <p>Please wait while we complete the Dropbox authentication process.</p>
+      <p class="status" id="status">Preparing authentication…</p>
+    </div>
+
+    <script>
+      const ACCESS_TOKEN_KEY = 'dropbox_access_token';
+      const REFRESH_TOKEN_KEY = 'dropbox_refresh_token';
+      const TOKEN_EXPIRY_KEY = 'dropbox_token_expiry';
+      const STATE_STORAGE_KEY = 'dropbox_auth_state';
+
+      const statusEl = document.getElementById('status');
+
+      const setStatus = (message, type) => {
+        statusEl.textContent = message;
+        statusEl.className = 'status' + (type ? ' ' + type : '');
+      };
+
+      const notifyParent = (type, payload = {}) => {
+        try {
+          if (window.opener && !window.opener.closed) {
+            window.opener.postMessage({ type, ...payload }, window.location.origin);
+          }
+        } catch (err) {
+          console.warn('Unable to notify parent window', err);
+        }
+      };
+
+      const closeWindow = () => {
+        setTimeout(() => {
+          try {
+            window.close();
+          } catch (err) {
+            console.warn('Unable to close window automatically');
+          }
+        }, 700);
+      };
+
+      const params = new URLSearchParams(window.location.search);
+      const error = params.get('error_description') || params.get('error');
+
+      if (error) {
+        const decodedError = decodeURIComponent(error);
+        setStatus(`Dropbox authentication failed: ${decodedError}`, 'error');
+        notifyParent('dropbox-auth-error', { message: decodedError });
+        closeWindow();
+      } else {
+        const code = params.get('code');
+        const state = params.get('state');
+        const storedState = window.localStorage.getItem(STATE_STORAGE_KEY);
+
+        if (!code) {
+          setStatus('Missing authorization code from Dropbox.', 'error');
+          notifyParent('dropbox-auth-error', { message: 'Missing authorization code from Dropbox.' });
+          closeWindow();
+        } else if (!state || !storedState || state !== storedState) {
+          setStatus('Security validation failed. Please try connecting again.', 'error');
+          notifyParent('dropbox-auth-error', { message: 'State mismatch during Dropbox authentication.' });
+          closeWindow();
+        } else {
+          window.localStorage.removeItem(STATE_STORAGE_KEY);
+          const redirectUri = `${window.location.origin}/dropbox-auth.html`;
+
+          setStatus('Exchanging authorization code for access token…');
+
+          // Try the Netlify function first
+          fetch('/.netlify/functions/dropbox-auth', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              grant_type: 'authorization_code',
+              code,
+              redirect_uri: redirectUri
+            })
+          })
+            .then(async (response) => {
+              const data = await response.json().catch(() => ({}));
+              if (!response.ok) {
+                // If Netlify function fails, provide helpful error message
+                const message = data.error || data.error_description || data.error_summary || 'Dropbox authentication failed.';
+                throw new Error(`Server authentication failed: ${message}. Please ensure Netlify functions are deployed or configure Dropbox credentials in the settings.`);
+              }
+              return data;
+            })
+            .then((data) => {
+              // Store the tokens
+              if (data.access_token) {
+                window.localStorage.setItem(ACCESS_TOKEN_KEY, data.access_token);
+              }
+              if (data.refresh_token) {
+                window.localStorage.setItem(REFRESH_TOKEN_KEY, data.refresh_token);
+              }
+              if (data.expires_in) {
+                const expiryBufferSeconds = 60;
+                const expiry = Date.now() + (data.expires_in - expiryBufferSeconds) * 1000;
+                window.localStorage.setItem(TOKEN_EXPIRY_KEY, `${expiry}`);
+              } else {
+                window.localStorage.removeItem(TOKEN_EXPIRY_KEY);
+              }
+
+              setStatus('Dropbox connected successfully! You can close this window.', 'success');
+              notifyParent('dropbox-auth-success');
+              closeWindow();
+            })
+            .catch((err) => {
+              console.error('Authentication error:', err);
+              const message = err?.message || 'Unable to authenticate with Dropbox. Please check your configuration and try again.';
+              setStatus(message, 'error');
+              notifyParent('dropbox-auth-error', { message });
+              closeWindow();
+            });
+        }
+      }
+    </script>
+  </body>
+</html>

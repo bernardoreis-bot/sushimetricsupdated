@@ -1,0 +1,20 @@
+{
+	"geolocation": {
+		"data": {
+			"city": "Leeds",
+			"country": {
+				"code": "GB",
+				"name": "United Kingdom"
+			},
+			"subdivision": {
+				"code": "ENG",
+				"name": "England"
+			},
+			"timezone": "Europe/London",
+			"latitude": 53.8258,
+			"longitude": -1.5205,
+			"postalCode": "LS8"
+		},
+		"timestamp": 1761777009187
+	}
+}

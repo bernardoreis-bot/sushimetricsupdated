@@ -1,0 +1,1 @@
+module.exports = require('./netlify/functions/powerbi-sales-schedule.js')
