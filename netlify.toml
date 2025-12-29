@@ -5,7 +5,13 @@
 [functions]
   directory = "netlify/functions"
   node_bundler = "esbuild"
-  external_node_modules = ["chrome-aws-lambda", "puppeteer-core"]
+  external_node_modules = [
+    "@sparticuz/chromium",
+    "chrome-aws-lambda",
+    "puppeteer-core",
+    "puppeteer-extra",
+    "puppeteer-extra-plugin-stealth"
+  ]
 
 [build.environment]
   NODE_VERSION = "18"

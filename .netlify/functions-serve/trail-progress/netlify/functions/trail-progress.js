@@ -11820,33 +11820,9 @@ __export(trail_progress_exports, {
   handler: () => handler
 });
 module.exports = __toCommonJS(trail_progress_exports);
-var createResponse = (statusCode, body) => ({
-  statusCode,
-  headers: {
-    "Content-Type": "application/json",
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "Content-Type",
-    "Access-Control-Allow-Methods": "GET, OPTIONS"
-  },
-  body: JSON.stringify(body)
-});
 var handler = async (event) => {
-  if (event.httpMethod === "OPTIONS") {
-    return createResponse(200, {});
-  }
-  if (event.httpMethod !== "GET") {
-    return createResponse(405, { error: "Method not allowed" });
-  }
   try {
     const account = (event.queryStringParameters?.account || "").toLowerCase();
-    const page = (event.queryStringParameters?.page || "tasks").toLowerCase();
-    const mode = (event.queryStringParameters?.mode || "auto").toLowerCase();
-    const isBrowserMode = mode === "browser";
-    const urlMap = {
-      "tasks": "https://web.trailapp.com/trail#/",
-      "reports": "https://web.trailapp.com/reports#/scores?interval=daily"
-    };
-    const url = urlMap[page] || urlMap.tasks;
     const map = {
       allerton: { email: process.env.TRAIL_ALLERTON_EMAIL, pass: process.env.TRAIL_ALLERTON_PASSWORD },
       sefton: { email: process.env.TRAIL_SEFTON_EMAIL, pass: process.env.TRAIL_SEFTON_PASSWORD },
@@ -11874,112 +11850,54 @@ var handler = async (event) => {
       }
     }
     if (!map[account]) {
-      return createResponse(400, { error: "Invalid account. Use allerton|sefton|oldswan" });
+      return { statusCode: 400, body: JSON.stringify({ error: "Invalid account. Use allerton|sefton|oldswan" }) };
     }
     const { email, pass } = map[account];
     if (!email || !pass) {
-      return createResponse(400, {
-        error: `Missing credentials for ${account}. Add them in Sushi Metrics \u2192 People Management \u2192 Trail Progress \u2192 Trail Credentials, or set TRAIL_* env vars in Netlify.`
-      });
+      return { statusCode: 400, body: JSON.stringify({ error: `Missing credentials for ${account}. Add them in Sushi Metrics \u2192 People Management \u2192 Trail Progress \u2192 Trail Credentials, or set TRAIL_* env vars in Netlify.` }) };
     }
     const chromium = require("chrome-aws-lambda");
     const puppeteer = require("puppeteer-core");
-    console.log(`Starting browser in ${mode} mode for ${account} (${page} page)`);
-    if (!["tasks", "reports"].includes(page)) {
-      return createResponse(400, { error: "Invalid page. Use tasks or reports" });
-    }
-    const isHeadless = mode !== "browser";
-    const launchArgs = [
-      ...chromium.args,
-      "--disable-gpu",
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-      "--disable-dev-shm-usage",
-      "--disable-accelerated-2d-canvas",
-      "--no-first-run",
-      "--no-zygote",
-      "--single-process",
-      "--disable-extensions"
-    ];
     const browser = await puppeteer.launch({
-      args: launchArgs,
+      args: [...chromium.args, "--disable-gpu", "--single-process"],
       defaultViewport: chromium.defaultViewport,
       executablePath: await chromium.executablePath,
-      headless: isHeadless,
-      ignoreHTTPSErrors: true
+      headless: chromium.headless
     });
-    const pages = await browser.pages();
-    for (const page2 of pages) {
-      await page2.close().catch(() => {
-      });
-    }
-    console.log(`Browser launched in ${isHeadless ? "headless" : "visible"} mode`);
     try {
-      const page2 = await browser.newPage();
-      page2.setDefaultTimeout(12e3);
-      await page2.goto(url, { waitUntil: "networkidle2" });
+      const page = await browser.newPage();
+      page.setDefaultTimeout(12e3);
+      const url = "https://web.trailapp.com/trail#/";
+      await page.goto(url, { waitUntil: "networkidle2" });
       try {
         const emailSel = 'input[type="email"], input[name="email"], input#email, input[name="username"], input#username';
         const passSel = 'input[type="password"], input[name="password"], input#password';
-        const hasEmail = await page2.$(emailSel);
-        const hasPass = await page2.$(passSel);
+        const hasEmail = await page.$(emailSel);
+        const hasPass = await page.$(passSel);
         if (hasEmail && hasPass) {
-          await page2.click(emailSel);
-          await page2.keyboard.type(email);
-          await page2.click(passSel);
-          await page2.keyboard.type(pass);
-          const submitBtn = await page2.$('button[type="submit"], button:not([type])');
+          await page.click(emailSel);
+          await page.keyboard.type(email);
+          await page.click(passSel);
+          await page.keyboard.type(pass);
+          const submitBtn = await page.$('button[type="submit"], button:not([type])');
           if (submitBtn) await submitBtn.click();
           else {
-            await page2.keyboard.press("Enter");
+            await page.keyboard.press("Enter");
           }
-          await page2.waitForNavigation({ waitUntil: "networkidle2", timeout: 1e4 }).catch(() => {
+          await page.waitForNavigation({ waitUntil: "networkidle2", timeout: 1e4 }).catch(() => {
           });
         }
-        const recaptchaSel = '.recaptcha-checkbox-border, #recaptcha-anchor, iframe[src*="recaptcha"]';
-        const hasRecaptcha = await page2.$(recaptchaSel);
-        if (hasRecaptcha) {
-          throw new Error('reCAPTCHA detected. Manual resolution required. Use the "Open Login Page in New Tab" button to resolve manually, then retry.');
-        }
-      } catch (e) {
-        const recaptchaSel = '.recaptcha-checkbox-border, #recaptcha-anchor, iframe[src*="recaptcha"]';
-        const hasRecaptcha = await page2.$(recaptchaSel);
-        if (hasRecaptcha) {
-          throw new Error('reCAPTCHA detected. Manual resolution required. Use the "Open Login Page in New Tab" button to resolve manually, then retry.');
-        }
+      } catch {
       }
-      if (isBrowserMode) {
-        try {
-          await page2.waitForFunction(
-            () => !document.querySelector('input[type="password"], input[name="password"], input#password'),
-            { timeout: 12e4 }
-          );
-        } catch {
-        }
-        await page2.waitForTimeout(2e3);
-      }
-      await page2.waitForTimeout(1500);
-      console.log("Taking screenshot...");
-      const buf = await page2.screenshot({
-        type: "png",
-        fullPage: true,
-        encoding: "base64"
-      });
-      const result = {
-        image: `data:image/png;base64,${buf}`,
-        ts: (/* @__PURE__ */ new Date()).toISOString()
-      };
-      console.log("Screenshot taken successfully");
-      return createResponse(200, result);
+      await page.waitForTimeout(1500);
+      const buf = await page.screenshot({ type: "png", fullPage: true });
+      const base64 = buf.toString("base64");
+      return { statusCode: 200, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }, body: JSON.stringify({ image: `data:image/png;base64,${base64}`, ts: (/* @__PURE__ */ new Date()).toISOString() }) };
     } finally {
       await browser.close();
     }
   } catch (err) {
-    console.error("Error in trail-progress function:", err);
-    return createResponse(500, {
-      error: err.message || "Internal server error",
-      details: process.env.NODE_ENV === "development" ? err.stack : void 0
-    });
+    return { statusCode: 500, body: JSON.stringify({ error: err.message || "Internal error" }) };
   }
 };
 // Annotate the CommonJS export names for ESM import in node:

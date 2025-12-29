@@ -52,18 +52,18 @@ const fetchStoredCredentials = async () => {
   const { data, error } = await supabase
     .from('app_settings')
     .select('setting_value')
-    .eq('setting_key', 'trail_credentials')
+    .eq('setting_key', 'trail_credentials_copy')
     .maybeSingle();
 
   if (error) {
-    console.error('[trail-fetch] Failed to load stored credentials', error.message);
+    console.error('[trail-fetch-copy] Failed to load stored credentials', error.message);
     return null;
   }
 
   try {
     return data?.setting_value ? JSON.parse(data.setting_value) : null;
   } catch (parseError) {
-    console.error('[trail-fetch] Invalid stored credentials payload');
+    console.error('[trail-fetch-copy] Invalid stored credentials payload');
     return null;
   }
 };
@@ -134,7 +134,7 @@ const extractStructuredData = async (page) => {
       return output;
     });
   } catch (error) {
-    console.warn('[trail-fetch] Failed to extract structured data:', error.message);
+    console.warn('[trail-fetch-copy] Failed to extract structured data:', error.message);
     return {
       tasks: [],
       summary: null,
@@ -200,11 +200,11 @@ exports.handler = async (event) => {
   if (!credentials) {
     return jsonResponse(400, {
       success: false,
-      error: `Missing credentials for ${STORE_MAP[store]}. Save them in Sushi Metrics or set TRAIL_${store.toUpperCase()}_* environment variables.`,
+      error: `Missing credentials for ${STORE_MAP[store]}. Save them in Sushi Metrics → People Management → Trail Progress (Copy) → Trail Credentials, or set TRAIL_${store.toUpperCase()}_* environment variables.`,
     });
   }
 
-  console.log(`[trail-fetch] Fetching ${store}/${reportType} with ${credentials.email}`);
+  console.log(`[trail-fetch-copy] Fetching ${store}/${reportType} with ${credentials.email}`);
 
   let browser;
   try {
@@ -245,7 +245,7 @@ exports.handler = async (event) => {
           await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 12000 }).catch(() => null);
         }
       } catch (loginError) {
-        console.warn('[trail-fetch] Login interaction failed:', loginError.message);
+        console.warn('[trail-fetch-copy] Login interaction failed:', loginError.message);
       }
     }
 
@@ -266,7 +266,7 @@ exports.handler = async (event) => {
       data,
     });
   } catch (error) {
-    console.error('[trail-fetch] Unhandled error:', error.message);
+    console.error('[trail-fetch-copy] Unhandled error:', error.message);
     return jsonResponse(500, {
       success: false,
       error: 'Failed to generate Trail report. Please try again.',

@@ -8,6 +8,7 @@ import TransactionCategories from './components/TransactionCategories';
 import Sites from './components/Sites';
 import Suppliers from './components/Suppliers';
 import ProductionSheetPanel from './components/ProductionSheetPanel';
+import ProductionSheetPanelCopy from './components/ProductionSheetPanelCopy';
 import StockCountNew from './components/StockCountNew';
 import PowerBISales from './components/PowerBISales';
 import ParsingRules from './components/ParsingRules';
@@ -19,6 +20,7 @@ import DashboardCustomization from './components/DashboardCustomization';
 import StockAnalysis from './components/StockAnalysis';
 import PeopleTrackerEnhanced from './components/PeopleTrackerEnhanced';
 import TrailProgress from './components/TrailProgress';
+import TrailProgressCopy from './components/TrailProgressCopy';
 import AttensiProgress from './components/AttensiProgress';
 
 function App() {
@@ -136,10 +138,12 @@ function App() {
         {currentPage === 'powerbi' && <PowerBISales />}
         {currentPage === 'predictions' && <OrderPredictions />}
         {currentPage === 'production' && <ProductionSheetPanel />}
+        {currentPage === 'production-copy' && <ProductionSheetPanelCopy />}
         {currentPage === 'itemmapping' && <ItemMapping />}
         {currentPage === 'stockanalysis' && <StockAnalysis />}
         {currentPage === 'people' && <PeopleTrackerEnhanced />}
         {currentPage === 'trail' && <TrailProgress />}
+        {currentPage === 'trail-copy' && <TrailProgressCopy />}
         {currentPage === 'attensi' && <AttensiProgress />}
         {currentPage === 'categories' && <TransactionCategories />}
         {currentPage === 'sites' && <Sites />}

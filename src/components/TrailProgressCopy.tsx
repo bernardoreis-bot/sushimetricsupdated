@@ -65,7 +65,7 @@ const createPanelRecord = <T,>(defaultValue: T): Record<PanelKey, T> => {
 
 const THIRTY_MINUTES_MS = 30 * 60 * 1000;
 
-export default function TrailProgress() {
+export default function TrailProgressCopy() {
   const [stores, setStores] = useState<Store[]>(() => STORE_DEFINITIONS.map((store) => ({ ...store })));
   const [loading, setLoading] = useState<Record<PanelKey, boolean>>(() => createPanelRecord(false));
   const [screenshots, setScreenshots] = useState<Record<PanelKey, string | null>>(() => createPanelRecord<string | null>(null));
@@ -96,7 +96,7 @@ export default function TrailProgress() {
       const { data, error } = await supabase
         .from('app_settings')
         .select('setting_value')
-        .eq('setting_key', 'trail_credentials')
+        .eq('setting_key', 'trail_credentials_copy')
         .maybeSingle();
 
       if (error) {
@@ -151,7 +151,7 @@ export default function TrailProgress() {
         .from('app_settings')
         .upsert(
           {
-            setting_key: 'trail_credentials',
+            setting_key: 'trail_credentials_copy',
             setting_value: JSON.stringify(payload),
             updated_at: new Date().toISOString(),
           },
@@ -191,7 +191,7 @@ export default function TrailProgress() {
       setLoading((prev) => ({ ...prev, [panelKey]: true }));
 
       try {
-        const response = await fetch('/.netlify/functions/trail-fetch', {
+        const response = await fetch('/.netlify/functions/trail-fetch-copy', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -229,7 +229,7 @@ export default function TrailProgress() {
       
       try {
         // First, trigger the screenshot capture
-        const response = await fetch('/.netlify/functions/trail-session', {
+        const response = await fetch('/.netlify/functions/trail-session-copy', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -261,7 +261,7 @@ export default function TrailProgress() {
               const windowFeatures = `width=${width},height=${height},top=${top},left=${left},menubar=no,toolbar=no,location=no,status=no`;
               
               // Open the window with the report URL
-              const newWindow = window.open(url, `trail-${store.id}-${report.id}`, windowFeatures);
+              const newWindow = window.open(url, `trail-copy-${store.id}-${report.id}`, windowFeatures);
               
               if (!newWindow) {
                 console.warn('Popup was blocked. Please allow popups for this site.');
@@ -392,7 +392,7 @@ export default function TrailProgress() {
     <div className="p-6 md:p-8 space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl md:text-3xl font-bold text-gray-900">Trail Progress</h1>
+          <h1 className="text-2xl md:text-3xl font-bold text-gray-900">Trail Progress (Copy)</h1>
           <div className="space-y-2 max-w-2xl">
             <p className="text-gray-500">
               Monitor Trail Complete Tasks and Daily Reports across all stores. Each store uses an isolated browser session to prevent login conflicts.
@@ -431,7 +431,7 @@ export default function TrailProgress() {
 
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-lg font-semibold text-gray-900">Trail Credentials</h2>
+          <h2 className="text-lg font-semibold text-gray-900">Trail Credentials (Copy)</h2>
           {saveMessage && <span className="text-sm text-gray-700">{saveMessage}</span>}
         </div>
         <p className="text-sm text-gray-600">
