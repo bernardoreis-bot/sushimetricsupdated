@@ -22,6 +22,7 @@ import PeopleTrackerEnhanced from './components/PeopleTrackerEnhanced';
 import TrailProgress from './components/TrailProgress';
 import TrailProgressCopy from './components/TrailProgressCopy';
 import AttensiProgress from './components/AttensiProgress';
+import TestCopyComponents from './components/TestCopyComponents';
 
 function App() {
   const [currentPage, setCurrentPage] = useState('dashboard');
@@ -144,6 +145,7 @@ function App() {
         {currentPage === 'people' && <PeopleTrackerEnhanced />}
         {currentPage === 'trail' && <TrailProgress />}
         {currentPage === 'trail-copy' && <TrailProgressCopy />}
+        {currentPage === 'test-copy' && <TestCopyComponents />}
         {currentPage === 'attensi' && <AttensiProgress />}
         {currentPage === 'categories' && <TransactionCategories />}
         {currentPage === 'sites' && <Sites />}
