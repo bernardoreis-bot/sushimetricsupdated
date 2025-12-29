@@ -7,6 +7,7 @@ interface SidebarProps {
 }
 
 export default function Sidebar({ currentPage, onNavigate }: SidebarProps) {
+  // Updated: Dec 29, 2025 - Added copy versions
   const menuSections = [
     {
       title: 'Overview',
