@@ -192,7 +192,7 @@ export default function TrailProgressCopy() {
       setLoading((prev) => ({ ...prev, [panelKey]: true }));
 
       try {
-        const response = await fetch('/.netlify/functions/trail-fetch-copy.cjs', {
+        const response = await fetch('/.netlify/functions/trail-fetch-copy', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -230,7 +230,7 @@ export default function TrailProgressCopy() {
       
       try {
         // First, trigger the screenshot capture
-        const response = await fetch('/.netlify/functions/trail-session-copy.cjs', {
+        const response = await fetch('/.netlify/functions/trail-session-copy', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

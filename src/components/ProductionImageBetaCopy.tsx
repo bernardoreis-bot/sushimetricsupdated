@@ -271,7 +271,7 @@ export default function ProductionImageBetaCopy() {
       const formData = new FormData();
       formData.append('image', imageFile);
 
-      const apiUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/process-production-image-copy.cjs`;
+      const apiUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/process-production-image-copy`;
       const { data: { session } } = await supabase.auth.getSession();
 
       const response = await fetch(apiUrl, {

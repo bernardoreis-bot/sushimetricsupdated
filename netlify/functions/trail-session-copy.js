@@ -1,4 +1,4 @@
-const { chromium } = require('playwright');
+const { chromium } = require('playwright-extra');
 const { v4: uuidv4 } = require('uuid');
 const { createClient } = require('@supabase/supabase-js');
 const path = require('path');
@@ -134,7 +134,9 @@ async function handleLogin(page, credentials, reportType) {
     await page.waitForLoadState('networkidle');
     
     // Check if already logged in
-    const isLoggedIn = await page.locator('input[type="email"], input[name="email"]').count() === 0;
+    const isLoggedIn = await page.evaluate(() => {
+      return !document.querySelector('input[type="email"], input[name="email"]');
+    });
     
     if (isLoggedIn) {
       console.log('Already logged in');
@@ -144,13 +146,13 @@ async function handleLogin(page, credentials, reportType) {
     console.log('Attempting to log in...');
     
     // Handle login form with more robust selectors
-    await page.locator('input[type="email"], input[name="email"]').fill(credentials.email);
-    await page.locator('input[type="password"]').fill(credentials.password);
+    await page.fill('input[type="email"], input[name="email"]', credentials.email);
+    await page.fill('input[type="password"]', credentials.password);
     
     // Click the login button and wait for navigation
     await Promise.all([
       page.waitForNavigation({ waitUntil: 'networkidle', timeout: 30000 }),
-      page.locator('button[type="submit"], button:has-text("Sign In")').click()
+      page.click('button[type="submit"], button:has-text("Sign In")')
     ]);
     
     // Wait for the page to fully load after login
@@ -186,7 +188,7 @@ async function takeScreenshot(page, reportType) {
     await page.waitForLoadState('networkidle');
     
     // Additional wait for dynamic content
-    await page.waitForTimeout(2000);
+    await new Promise(resolve => setTimeout(resolve, 2000));
     
     // Take a full page screenshot
     const screenshot = await page.screenshot({
