@@ -22,7 +22,7 @@
     "lucide-react": "^0.344.0",
     "openai": "^6.15.0",
     "pdfjs-dist": "^5.4.296",
-    "playwright": "^1.56.1",
+    "playwright": "^1.57.0",
     "playwright-extra": "^4.3.6",
     "puppeteer": "^24.29.1",
     "puppeteer-core": "^10.1.0",

@@ -74,6 +74,7 @@ export default function TrailProgressCopy() {
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [loadingCreds, setLoadingCreds] = useState(false);
   const [credentialsError, setCredentialsError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const shouldRefetch = useCallback(
     (panelKey: PanelKey) => {
@@ -245,15 +246,16 @@ export default function TrailProgressCopy() {
         });
 
         if (response.ok) {
-          const { success, screenshot, error, url } = await response.json();
+          const result = await response.json();
+          console.log('Trail session response:', result);
           
-          if (success && screenshot) {
+          if (result.success && result.screenshot) {
             // Update the screenshot in the UI
-            setScreenshots(prev => ({ ...prev, [panelKey]: screenshot }));
-            setLastFetch(prev => ({ ...prev, [panelKey]: new Date().toISOString() }));
+            setScreenshots(prev => ({ ...prev, [panelKey]: result.screenshot }));
+            setLastFetch(prev => ({ ...prev, [panelKey]: result.timestamp || new Date().toISOString() }));
             
             // Open the report URL in a new window after screenshot is taken
-            if (url) {
+            if (result.url) {
               const width = 1280;
               const height = 900;
               const left = (window.screen.width - width) / 2;
@@ -261,15 +263,20 @@ export default function TrailProgressCopy() {
               const windowFeatures = `width=${width},height=${height},top=${top},left=${left},menubar=no,toolbar=no,location=no,status=no`;
               
               // Open the window with the report URL
-              const newWindow = window.open(url, `trail-copy-${store.id}-${report.id}`, windowFeatures);
+              const newWindow = window.open(result.url, `trail-copy-${store.id}-${report.id}`, windowFeatures);
               
               if (!newWindow) {
                 console.warn('Popup was blocked. Please allow popups for this site.');
               }
             }
           } else {
-            console.error('Failed to capture screenshot:', error);
+            console.error('Failed to capture screenshot:', result.error);
+            setError(result.error || 'Failed to capture screenshot');
           }
+        } else {
+          const errorText = await response.text();
+          console.error('Trail session request failed:', response.status, errorText);
+          setError(`Screenshot request failed: ${response.status}`);
         }
       } catch (error) {
         console.error('Error in handleBrowserLogin:', error);
@@ -390,6 +397,20 @@ export default function TrailProgressCopy() {
 
   return (
     <div className="p-6 md:p-8 space-y-6">
+      {error && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+          <div className="flex items-center gap-3">
+            <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0" />
+            <p className="text-red-800">{error}</p>
+            <button
+              onClick={() => setError(null)}
+              className="ml-auto text-red-600 hover:text-red-800"
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      )}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl md:text-3xl font-bold text-gray-900">Trail Progress (Copy)</h1>
