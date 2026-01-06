@@ -3,7 +3,7 @@ import { supabase } from '../lib/supabase';
 
 interface Site { id: string; name: string; }
 
-const POWERBI_EMBED_URL = 'https://app.powerbi.com/reportEmbed?reportId=c016912d-8d76-4829-85bb-e2f4056dd807&appId=eb0beee5-b009-4dee-816d-21adae41cf84&autoAuth=true&ctid=d1fd9353-f65b-4e79-a56a-70b4591ad484&actionBarEnabled=true&reportCopilotInEmbed=true';
+const POWERBI_EMBED_URL = 'https://app.powerbi.com/reportEmbed?reportId=bc012c13-5fac-40ac-8eb1-075976a011f5&appId=eb0beee5-b009-4dee-816d-21adae41cf84&autoAuth=true&ctid=d1fd9353-f65b-4e79-a56a-70b4591ad484&actionBarEnabled=true&reportCopilotInEmbed=true';
 const POWERBI_DAILY_URL = 'https://app.powerbi.com/reportEmbed?reportId=a22f8ce4-fc3a-44d0-a85f-83b43ee619c0&appId=eb0beee5-b009-4dee-816d-21adae41cf84&autoAuth=true&ctid=d1fd9353-f65b-4e79-a56a-70b4591ad484&actionBarEnabled=true';
 const POWERBI_DETAIL_URL = 'https://app.powerbi.com/reportEmbed?reportId=f5aec466-0ff8-478c-86b9-83ab98400152&appId=eb0beee5-b009-4dee-816d-21adae41cf84&autoAuth=true&ctid=d1fd9353-f65b-4e79-a56a-70b4591ad484&actionBarEnabled=true';
 

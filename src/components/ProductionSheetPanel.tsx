@@ -5,7 +5,6 @@ import { batchMatchItems, ItemAlias } from '../utils/fuzzyItemMatcher';
 import ItemAliasManager from './ItemAliasManager';
 import MatchReviewModal from './MatchReviewModal';
 import OpenAISetupWizard from './OpenAISetupWizard';
-import { getLastThreeSundays, type WeekInfo } from '../utils/weekCalculations';
 
 interface ProductionPlanItem {
   name: string;
@@ -21,7 +20,8 @@ interface ProductionItemMapping {
 
 
 export default function ProductionSheetPanel() {
-  const [files, setFiles] = useState<File[]>([]);
+  const [salesFile, setSalesFile] = useState<File | null>(null);
+  const [salesPeriodsUsed, setSalesPeriodsUsed] = useState<string[]>([]);
   const [productionPlanFile, setProductionPlanFile] = useState<File | null>(null);
   const [productionPlan, setProductionPlan] = useState<ProductionPlanItem[]>([]);
   const [productionMappings, setProductionMappings] = useState<ProductionItemMapping[]>([]);
@@ -32,7 +32,7 @@ export default function ProductionSheetPanel() {
       avgSold: string;
       recommendedWithBuffer: number;
       perDay: number;
-      weeksAnalyzed: number;
+      periodsAnalyzed: number;
       isReduced: boolean;
       price: string;
       bufferPercent: string;
@@ -48,13 +48,13 @@ export default function ProductionSheetPanel() {
       itemCount: number;
       reducedPrice: number;
     }>;
+    periodLabels?: string[];
   } | null>(null);
   const [manualVariability, setManualVariability] = useState<Map<number, number>>(new Map());
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [selectedSite, setSelectedSite] = useState<string>('');
   const [sites, setSites] = useState<Array<{id: string; name: string}>>([]);
-  const [weekInfos, setWeekInfos] = useState<WeekInfo[]>([]);
 
   // Fuzzy matching state
   const [itemAliases, setItemAliases] = useState<ItemAlias[]>([]);
@@ -72,8 +72,6 @@ export default function ProductionSheetPanel() {
   const [checkingOpenAI, setCheckingOpenAI] = useState(true);
 
   useEffect(() => {
-    const weeks = getLastThreeSundays();
-    setWeekInfos(weeks);
     loadProductionMappings();
     loadSites();
     loadItemAliases();
@@ -179,24 +177,91 @@ export default function ProductionSheetPanel() {
     }
   };
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, weekNumber: number) => {
+  const handleSalesFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
-    if (files.length >= 3 && !files[weekNumber - 1]) {
-      setError('Maximum 3 files allowed');
-      return;
-    }
-
-    const newFiles = [...files];
-    newFiles[weekNumber - 1] = file;
-    setFiles(newFiles);
+    setSalesFile(file);
     setError('');
   };
 
-  const removeFile = (index: number) => {
-    setFiles(prev => prev.filter((_, i) => i !== index));
+  const removeSalesFile = () => {
+    setSalesFile(null);
     setProductionData(null);
+    setSalesPeriodsUsed([]);
+  };
+
+  const parseDateValue = (value: any): Date | null => {
+    if (!value && value !== 0) return null;
+    if (value instanceof Date && !isNaN(value.getTime())) {
+      return value;
+    }
+    if (typeof value === 'number' && !Number.isNaN(value)) {
+      const excelEpoch = new Date(Math.round((value - 25569) * 86400 * 1000));
+      if (!isNaN(excelEpoch.getTime())) return excelEpoch;
+    }
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (!trimmed) return null;
+      const isoParsed = new Date(trimmed);
+      if (!isNaN(isoParsed.getTime())) return isoParsed;
+      const match = trimmed.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
+      if (match) {
+        const day = parseInt(match[1], 10);
+        const month = parseInt(match[2], 10) - 1;
+        let year = parseInt(match[3], 10);
+        if (year < 100) year += 2000;
+        const customDate = new Date(year, month, day);
+        if (!isNaN(customDate.getTime())) return customDate;
+      }
+    }
+    return null;
+  };
+
+  const extractDateFromRow = (row: any): Date | null => {
+    const candidates = [
+      'Date', 'date', 'DATE',
+      'Transaction Date', 'transaction date', 'TRANSACTION DATE',
+      'Week Ending', 'week ending', 'Week ending',
+      'Period', 'period'
+    ];
+    for (const key of candidates) {
+      if (row[key] !== undefined && row[key] !== null && row[key] !== '') {
+        const parsed = parseDateValue(row[key]);
+        if (parsed) return parsed;
+      }
+    }
+    return null;
+  };
+
+  const groupRowsByRecentMonths = (rows: any[]) => {
+    const monthMap = new Map<string, { label: string; rows: any[] }>();
+
+    rows.forEach(row => {
+      const dateValue = extractDateFromRow(row);
+      if (!dateValue) return;
+      const key = `${dateValue.getFullYear()}-${String(dateValue.getMonth() + 1).padStart(2, '0')}`;
+      const label = dateValue.toLocaleString('en-GB', { month: 'short', year: 'numeric' });
+
+      if (!monthMap.has(key)) {
+        monthMap.set(key, { label, rows: [] });
+      }
+      monthMap.get(key)!.rows.push(row);
+    });
+
+    const sortedKeys = Array.from(monthMap.keys()).sort((a, b) => (a < b ? 1 : -1));
+
+    if (sortedKeys.length === 0) {
+      return {
+        dataArrays: rows.length ? [rows] : [],
+        labels: rows.length ? ['All Data'] : []
+      };
+    }
+
+    const selectedKeys = sortedKeys.slice(0, 3);
+    const dataArrays = selectedKeys.map(key => monthMap.get(key)!.rows);
+    const labels = selectedKeys.map(key => monthMap.get(key)!.label);
+
+    return { dataArrays, labels };
   };
 
   const performFuzzyMatching = async (planItems: ProductionPlanItem[]) => {
@@ -243,9 +308,9 @@ export default function ProductionSheetPanel() {
     }
   };
 
-  const processFiles = async () => {
-    if (files.length === 0) {
-      setError('Please upload at least one Excel file');
+  const processSalesFile = async () => {
+    if (!salesFile) {
+      setError('Please upload the consolidated sales Excel file');
       return;
     }
 
@@ -257,15 +322,16 @@ export default function ProductionSheetPanel() {
         await loadXLSXLibrary();
       }
 
-      const allData = [];
+      const fileData = await readExcelFile(salesFile);
+      const { dataArrays, labels } = groupRowsByRecentMonths(fileData);
 
-      for (const file of files) {
-        const data = await readExcelFile(file);
-        allData.push(data);
+      if (dataArrays.length === 0) {
+        throw new Error('No dated sales rows were found. Please ensure the file contains a Date column.');
       }
 
-      const averaged = calculateAverages(allData);
+      const averaged = calculateAverages(dataArrays, labels);
       setProductionData(averaged);
+      setSalesPeriodsUsed(averaged.periodLabels || []);
     } catch (err) {
       setError(`Error processing files: ${(err as Error).message}`);
       console.error('Processing error:', err);
@@ -312,16 +378,31 @@ export default function ProductionSheetPanel() {
     });
   };
 
-  const calculateAverages = (dataArrays: any[][]) => {
+  const calculateAverages = (dataArrays: any[][], periodLabels: string[] = []) => {
     const itemMap = new Map<string, { production: number[]; sales: number[]; isReduced: boolean; prices: number[]; reducedPrice?: number }>();
     const reducedItemsMap = new Map<string, number[]>();
     const reducedByPriceMap = new Map<number, { reducedQty: number; producedQty: number }>();
 
-    dataArrays.forEach((weekData) => {
-      weekData.forEach(row => {
+    dataArrays.forEach((periodRows) => {
+      const periodItemMap = new Map<string, {
+        productionSum: number;
+        salesSum: number;
+        priceSamples: number[];
+        salesValueSum: number;
+        isReduced: boolean;
+      }>();
+
+      periodRows.forEach(row => {
         const itemName = row['Item Name'] || row.Item || row.item || row.Product ||
                         row.product || row.Name || row.name || row.ITEM ||
                         row.PRODUCT || row['Product Name'] || '';
+
+        if (!itemName || typeof itemName !== 'string' || itemName.trim() === '') {
+          return;
+        }
+
+        const cleanName = String(itemName).trim();
+        const isReduced = cleanName.toLowerCase().includes('reduced');
 
         const productionQty = parseFloat(
           row['Production Quantity'] || row['production quantity'] ||
@@ -351,54 +432,80 @@ export default function ProductionSheetPanel() {
           price = salesValue / salesVolume;
         }
 
-        if (itemName && itemName.trim() !== '') {
-          const cleanName = String(itemName).trim();
-          const isReduced = cleanName.toLowerCase().includes('reduced');
+        let itemAggregates = periodItemMap.get(cleanName);
+        if (!itemAggregates) {
+          itemAggregates = {
+            productionSum: 0,
+            salesSum: 0,
+            priceSamples: [],
+            salesValueSum: 0,
+            isReduced
+          };
+          periodItemMap.set(cleanName, itemAggregates);
+        }
+        itemAggregates.isReduced = itemAggregates.isReduced || isReduced;
 
-          if (isReduced && !isNaN(salesVolume) && salesVolume > 0) {
-            if (!reducedItemsMap.has(cleanName)) {
-              reducedItemsMap.set(cleanName, []);
-            }
-            reducedItemsMap.get(cleanName)!.push(salesVolume);
+        if (!isNaN(productionQty) && productionQty > 0) {
+          itemAggregates.productionSum += productionQty;
+        }
+        if (!isNaN(salesVolume) && salesVolume > 0) {
+          itemAggregates.salesSum += salesVolume;
+        }
+        if (!isNaN(price) && price > 0) {
+          itemAggregates.priceSamples.push(price);
+        }
+        if (!isNaN(salesValue) && salesValue > 0) {
+          itemAggregates.salesValueSum += salesValue;
+        }
+      });
 
-            if (!isNaN(price) && price > 0) {
-              if (!reducedByPriceMap.has(price)) {
-                reducedByPriceMap.set(price, { reducedQty: 0, producedQty: 0 });
-              }
-              const priceData = reducedByPriceMap.get(price)!;
-              priceData.reducedQty += salesVolume;
-            }
+      periodItemMap.forEach((data, cleanName) => {
+        if (data.productionSum <= 0 && data.salesSum <= 0) return;
+
+        let avgPrice = 0;
+        if (data.priceSamples.length > 0) {
+          avgPrice = data.priceSamples.reduce((a, b) => a + b, 0) / data.priceSamples.length;
+        } else if (data.salesSum > 0 && data.salesValueSum > 0) {
+          avgPrice = data.salesValueSum / data.salesSum;
+        }
+
+        if (!itemMap.has(cleanName)) {
+          itemMap.set(cleanName, {
+            production: [],
+            sales: [],
+            isReduced: data.isReduced,
+            prices: [],
+            reducedPrice: data.isReduced && avgPrice > 0 ? avgPrice : undefined
+          });
+        }
+
+        const itemData = itemMap.get(cleanName)!;
+        itemData.isReduced = itemData.isReduced || data.isReduced;
+
+        if (data.productionSum > 0) {
+          itemData.production.push(data.productionSum);
+        }
+        if (data.salesSum > 0) {
+          itemData.sales.push(data.salesSum);
+        }
+        if (avgPrice > 0) {
+          itemData.prices.push(avgPrice);
+          if (data.isReduced) {
+            itemData.reducedPrice = avgPrice;
           }
+        }
 
-          // Create item entry if we have any valid data (production OR sales)
-          const hasProduction = !isNaN(productionQty) && productionQty > 0;
-          const hasSales = !isNaN(salesVolume) && salesVolume > 0;
-          const hasPrice = !isNaN(price) && price > 0;
+        if (data.isReduced && data.salesSum > 0) {
+          if (!reducedItemsMap.has(cleanName)) {
+            reducedItemsMap.set(cleanName, []);
+          }
+          reducedItemsMap.get(cleanName)!.push(data.salesSum);
 
-          if (hasProduction || hasSales) {
-            if (!itemMap.has(cleanName)) {
-              itemMap.set(cleanName, {
-                production: [],
-                sales: [],
-                isReduced,
-                prices: [],
-                reducedPrice: isReduced && hasPrice ? price : undefined
-              });
+          if (avgPrice > 0) {
+            if (!reducedByPriceMap.has(avgPrice)) {
+              reducedByPriceMap.set(avgPrice, { reducedQty: 0, producedQty: 0 });
             }
-            const itemData = itemMap.get(cleanName)!;
-
-            if (hasProduction) {
-              itemData.production.push(productionQty);
-            }
-            if (hasSales) {
-              itemData.sales.push(salesVolume);
-            }
-            if (hasPrice) {
-              itemData.prices.push(price);
-              if (isReduced) {
-                itemData.reducedPrice = price;
-              }
-            }
+            reducedByPriceMap.get(avgPrice)!.reducedQty += data.salesSum;
           }
         }
       });
@@ -525,7 +632,7 @@ export default function ProductionSheetPanel() {
       avgSold: string;
       recommendedWithBuffer: number;
       perDay: number;
-      weeksAnalyzed: number;
+      periodsAnalyzed: number;
       isReduced: boolean;
       price: string;
       bufferPercent: string;
@@ -573,7 +680,7 @@ export default function ProductionSheetPanel() {
         avgSold: avgSold.toFixed(2),
         recommendedWithBuffer,
         perDay,
-        weeksAnalyzed: Math.max(data.production.length, data.sales.length),
+        periodsAnalyzed: Math.max(data.production.length, data.sales.length),
         isReduced: data.isReduced,
         price: avgPrice > 0 ? avgPrice.toFixed(2) : 'N/A',
         bufferPercent: itemBufferPercent.toFixed(1)
@@ -590,7 +697,7 @@ export default function ProductionSheetPanel() {
       avgSold: totalRow.avgSold.toFixed(2),
       recommendedWithBuffer: totalRow.recommendedWithBuffer,
       perDay: Math.ceil(totalRow.recommendedWithBuffer / 7),
-      weeksAnalyzed: dataArrays.length,
+      periodsAnalyzed: dataArrays.length,
       isReduced: false,
       price: totalRow.priceCount > 0 ? (totalRow.price / totalRow.priceCount).toFixed(2) : 'N/A',
       bufferPercent: totalBufferPercent.toFixed(1)
@@ -609,6 +716,7 @@ export default function ProductionSheetPanel() {
       calculatedBufferPercent: averageBufferPercent.toFixed(1),
       reducedItemsAnalyzed: reducedItemsMap.size,
       totalReduced: totalReduced.toFixed(0),
+      periodLabels,
       priceRanges: reducedPriceRanges
         .filter(r => {
           const stats = reducedPriceStats.get(r.reducedPrice);
@@ -976,42 +1084,50 @@ export default function ProductionSheetPanel() {
           <div className="mb-8">
             <div className="flex items-center gap-2 mb-4">
               <Upload className="w-5 h-5 text-gray-600" />
-              <span className="text-lg font-semibold text-gray-700">Step 1: Upload Sales Data (Max 3 weeks)</span>
+              <span className="text-lg font-semibold text-gray-700">Step 1: Upload Consolidated Sales History</span>
             </div>
 
-            <div className="mt-3 p-3 bg-orange-50 rounded-lg mb-4">
-              <p className="text-sm text-gray-700 mb-2">
-                <strong>Expected Excel format:</strong> Your file should have "Item Name", "Production Quantity", "Sales Volume", and either "Price" or "Sales Value" columns
+            <div className="p-4 bg-orange-50 rounded-lg border border-orange-200 mb-4 space-y-2 text-sm text-gray-700">
+              <p>
+                Upload a <strong>single Excel file</strong> that contains all sales rows for recent months. The system will automatically detect the last 3 months present in the file.
               </p>
-              <p className="text-xs text-gray-600">
-                <strong>Last 3 weeks ending:</strong> {weekInfos.map(w => w.formattedDate).join(' | ')}
-              </p>
-            </div>
-
-            {weekInfos.map((weekInfo, index) => (
-              <div key={weekInfo.weekNumber} className="mb-3">
-                <label className="block">
-                  <span className="text-sm font-semibold text-gray-700 mb-2 block">{weekInfo.displayLabel}</span>
-                  <input
-                    type="file"
-                    accept=".xlsx,.xls"
-                    onChange={(e) => handleFileUpload(e, weekInfo.weekNumber)}
-                    className="block w-full text-sm text-gray-600 file:mr-4 file:py-3 file:px-6 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-orange-50 file:text-orange-700 hover:file:bg-orange-100 cursor-pointer"
-                  />
-                </label>
-                {files[index] && (
-                  <div className="mt-2 flex items-center justify-between bg-orange-50 p-3 rounded-lg">
-                    <span className="text-sm text-gray-700 font-medium">{files[index].name}</span>
-                    <button
-                      onClick={() => removeFile(index)}
-                      className="text-red-600 hover:text-red-800 text-sm font-semibold"
-                    >
-                      Remove
-                    </button>
-                  </div>
+              <ul className="list-disc list-inside space-y-1 text-xs">
+                <li>Required columns: <strong>Site Name</strong>, <strong>Date</strong>, <strong>Item Name</strong>, <strong>Sales Volume</strong>, <strong>Production Quantity</strong> (optional) and <strong>Sales Value</strong> or <strong>Price</strong>.</li>
+                <li>Multiple sites can be included; the tool filters by item names regardless of site.</li>
+                {salesPeriodsUsed.length > 0 && (
+                  <li>
+                    Using data from:&nbsp;
+                    <strong>{salesPeriodsUsed.join(' • ')}</strong>
+                  </li>
                 )}
+              </ul>
+            </div>
+
+            <label className="block">
+              <input
+                type="file"
+                accept=".xlsx,.xls"
+                onChange={handleSalesFileUpload}
+                className="block w-full text-sm text-gray-600 file:mr-4 file:py-3 file:px-6 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-orange-50 file:text-orange-700 hover:file:bg-orange-100 cursor-pointer"
+              />
+            </label>
+
+            {salesFile && (
+              <div className="mt-3 flex flex-col sm:flex-row sm:items-center sm:justify-between bg-white border border-gray-200 rounded-lg p-3 gap-2">
+                <div>
+                  <p className="text-sm font-semibold text-gray-800">{salesFile.name}</p>
+                  <p className="text-xs text-gray-500">
+                    {(salesFile.size / (1024 * 1024)).toFixed(2)} MB • Last modified {new Date(salesFile.lastModified).toLocaleString()}
+                  </p>
+                </div>
+                <button
+                  onClick={removeSalesFile}
+                  className="text-red-600 hover:text-red-800 text-sm font-semibold"
+                >
+                  Remove file
+                </button>
               </div>
-            ))}
+            )}
           </div>
 
           {error && (
@@ -1024,8 +1140,8 @@ export default function ProductionSheetPanel() {
           )}
 
           <button
-            onClick={processFiles}
-            disabled={files.length === 0 || loading}
+            onClick={processSalesFile}
+            disabled={!salesFile || loading}
             className="w-full bg-orange-500 hover:bg-orange-600 disabled:bg-gray-400 text-white font-bold py-4 px-6 rounded-xl flex items-center justify-center gap-3 transition-colors mb-8"
           >
             <Calculator className="w-5 h-5" />
@@ -1232,7 +1348,7 @@ export default function ProductionSheetPanel() {
                               const newMap = new Map(manualVariability);
                               newMap.set(range.reducedPrice, newVariability);
                               setManualVariability(newMap);
-                              processFiles();
+                              processSalesFile();
                             }}
                             className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-orange-500"
                           />
@@ -1281,7 +1397,6 @@ export default function ProductionSheetPanel() {
                       const planQtyWeek = match ? match.quantity * 7 : 0;
                       const weeklyDiff = match ? planQtyWeek - item.recommendedWithBuffer : 0;
                       const dailyDiff = match ? planQtyDay - item.perDay : 0;
-                      const hasWeeklyDiff = match && weeklyDiff !== 0;
                       const hasDailyDiff = match && dailyDiff !== 0;
 
                       let rowBgColor = index % 2 === 0 ? 'bg-gray-50' : 'bg-white';
@@ -1400,7 +1515,7 @@ export default function ProductionSheetPanel() {
                   <h3 className="font-semibold text-gray-800 mb-2">Summary</h3>
                   <p className="text-sm text-gray-600">
                     Total Items: <span className="font-bold">{productionData.items.length - 1}</span> |
-                    Analysis based on <span className="font-bold">{files.length}</span> week(s) of sales data |
+                    Analysis based on <span className="font-bold">{salesPeriodsUsed.length || 1}</span> month(s) of sales data |
                     Weighted Avg Buffer: <span className="font-bold">{productionData.calculatedBufferPercent}%</span>
                     (Total reduced units: {productionData.totalReduced} across {productionData.reducedItemsAnalyzed} item types)
                   </p>
