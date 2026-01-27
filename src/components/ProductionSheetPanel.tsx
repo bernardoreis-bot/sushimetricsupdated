@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Upload, Calculator, TrendingUp, AlertCircle, Link as LinkIcon, CheckCircle, Camera, Loader, AlertTriangle, Settings } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { batchMatchItems, ItemAlias } from '../utils/fuzzyItemMatcher';
@@ -6,10 +6,288 @@ import ItemAliasManager from './ItemAliasManager';
 import MatchReviewModal from './MatchReviewModal';
 import OpenAISetupWizard from './OpenAISetupWizard';
 
+const MIN_MONTHS_TO_ANALYZE = 3;
+const MAX_MONTHS_TO_ANALYZE = 6;
+const MONTH_OPTIONS = Array.from(
+  { length: MAX_MONTHS_TO_ANALYZE - MIN_MONTHS_TO_ANALYZE + 1 },
+  (_, index) => MIN_MONTHS_TO_ANALYZE + index
+);
+const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
+type WeekdayIndex = 0 | 1 | 2 | 3 | 4 | 5 | 6;
+export const WEEKDAY_ORDER: WeekdayIndex[] = [1, 2, 3, 4, 5, 6, 0]; 
+const PREFERENCES_KEY = 'production_sheet_preferences';
+const RESULTS_BACKUP_KEY = 'production_sheet_last_results';
+const CATEGORY_SETTINGS_STORAGE_KEY = 'production_sheet_item_categories';
+const CATEGORY_SETTINGS_APP_KEY = 'production_item_categories';
+const DEFAULT_ITEM_CATEGORY = 'Uncategorized';
+const ALL_CATEGORIES_FILTER = '__all__';
+
+const clampMonthCount = (value: number) =>
+  Math.max(MIN_MONTHS_TO_ANALYZE, Math.min(MAX_MONTHS_TO_ANALYZE, Math.round(value)));
+
+const isValidWeekday = (value: number): value is WeekdayIndex =>
+  Number.isInteger(value) && value >= 0 && value <= 6;
+
+const getWeekdayLabel = (value: number) => (isValidWeekday(value) ? WEEKDAY_LABELS[value] : 'Day');
+
+const getDefaultWeekday = (): WeekdayIndex => (new Date().getDay() % 7) as WeekdayIndex;
+
+type SalesRowWithDate = Record<string, any> & { __parsedDate?: Date | null };
+
+const createWeekdayNumberArray = () => WEEKDAY_ORDER.map(() => 0);
+
+const normalizeItemKey = (name: string) => name.trim().toLowerCase();
+
+interface ProductionSheetPreferences {
+  monthsToAnalyze: number;
+}
+
+interface GroupedRowsResult {
+  dataArrays: SalesRowWithDate[][];
+  labels: string[];
+  monthsUsed: number;
+}
+
+const normalizePreferences = (prefs?: Partial<ProductionSheetPreferences>): ProductionSheetPreferences => {
+  const months = clampMonthCount(prefs?.monthsToAnalyze ?? MIN_MONTHS_TO_ANALYZE);
+  return {
+    monthsToAnalyze: months
+  };
+};
+
+const readLocalPreferences = (): ProductionSheetPreferences | null => {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(PREFERENCES_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return normalizePreferences(parsed);
+  } catch (error) {
+    console.warn('Unable to read production sheet preferences from localStorage', error);
+    return null;
+  }
+};
+
+const writeLocalPreferences = (prefs: ProductionSheetPreferences) => {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(PREFERENCES_KEY, JSON.stringify(prefs));
+  } catch (error) {
+    console.warn('Unable to persist production sheet preferences locally', error);
+  }
+};
+
 interface ProductionPlanItem {
   name: string;
   quantity: number;
 }
+
+type ProductionResultsItem = {
+  item: string;
+  avgProduced: string;
+  avgSold: string;
+  recommendedWithBuffer: number;
+  perDay: number;
+  weekdayRecommendations?: number[];
+  periodsAnalyzed: number;
+  isReduced: boolean;
+  price: string;
+  bufferPercent: string;
+};
+
+type CategoryScope = 'global' | 'site';
+
+type CategorizedProductionItem = ProductionResultsItem & { category: string; categoryScope: CategoryScope };
+
+interface ProductionResultsState {
+  items: ProductionResultsItem[];
+  calculatedBufferPercent: string;
+  reducedItemsAnalyzed: number;
+  totalReduced: string;
+  priceRanges: Array<{
+    range: string;
+    bufferPercent: string;
+    baseRate: string;
+    variability: string;
+    itemCount: number;
+    reducedPrice: number;
+  }>;
+  periodLabels?: string[];
+  monthsRequested?: number;
+  monthsUsed?: number;
+}
+
+interface ResultsBackupPayload {
+  savedAt: string;
+  data: ProductionResultsState;
+  salesPeriods: string[];
+}
+
+interface ItemCategorySettings {
+  categories: string[];
+  assignments: Record<string, {
+    global?: string;
+    perSite?: Record<string, string>;
+  }>;
+}
+
+interface ProductionSalesHistoryEntry {
+  id: string;
+  site_id: string;
+  uploaded_at: string;
+  source_filename: string | null;
+  months_requested: number | null;
+  months_used: number | null;
+  periods: string[] | null;
+  data: ProductionResultsState;
+  uploaded_by: string | null;
+}
+
+const defaultCategorySettings: ItemCategorySettings = {
+  categories: [DEFAULT_ITEM_CATEGORY],
+  assignments: {}
+};
+
+const normalizeCategorySettings = (value?: Partial<ItemCategorySettings> | null): ItemCategorySettings => {
+  const categories = Array.isArray(value?.categories)
+    ? value!.categories
+        .filter((cat): cat is string => typeof cat === 'string')
+        .map(cat => cat.trim())
+        .filter(Boolean)
+    : [];
+
+  const categoryMap = new Map<string, string>();
+  [DEFAULT_ITEM_CATEGORY, ...categories].forEach((categoryName) => {
+    const trimmed = categoryName.trim();
+    if (!trimmed) return;
+    const key = trimmed.toLowerCase();
+    if (!categoryMap.has(key)) {
+      categoryMap.set(key, trimmed);
+    }
+  });
+  const uniqueCategories = Array.from(categoryMap.values());
+
+  const assignments: Record<string, { global?: string; perSite?: Record<string, string> }> = {};
+  if (value?.assignments && typeof value.assignments === 'object') {
+    Object.entries(value.assignments).forEach(([itemName, assignmentValue]) => {
+      const normalizedKey = normalizeItemKey(itemName);
+      if (!normalizedKey) return;
+
+      const newAssignment: { global?: string; perSite?: Record<string, string> } = {};
+
+      if (assignmentValue && typeof assignmentValue === 'object') {
+        // Handle global assignment
+        if (typeof (assignmentValue as any).global === 'string') {
+          const trimmedGlobal = (assignmentValue as any).global.trim();
+          if (trimmedGlobal) {
+            const match = uniqueCategories.find(cat => cat.toLowerCase() === trimmedGlobal.toLowerCase());
+            newAssignment.global = match ?? DEFAULT_ITEM_CATEGORY;
+          }
+        }
+
+        // Handle per-site assignments
+        if (assignmentValue.perSite && typeof assignmentValue.perSite === 'object') {
+          newAssignment.perSite = {};
+          Object.entries(assignmentValue.perSite).forEach(([siteId, category]) => {
+            if (typeof category === 'string') {
+              const trimmedSiteCategory = category.trim();
+              if (trimmedSiteCategory) {
+                const match = uniqueCategories.find(cat => cat.toLowerCase() === trimmedSiteCategory.toLowerCase());
+                newAssignment.perSite![siteId] = match ?? DEFAULT_ITEM_CATEGORY;
+              }
+            }
+          });
+        }
+      } else if (typeof assignmentValue === 'string') { // Old format: direct string assignment
+        const trimmed = (assignmentValue as string).trim();
+        if (trimmed) {
+          const match = uniqueCategories.find(cat => cat.toLowerCase() === trimmed.toLowerCase());
+          newAssignment.global = match ?? DEFAULT_ITEM_CATEGORY;
+        }
+      }
+      assignments[normalizedKey] = newAssignment;
+    });
+  }
+
+  return {
+    categories: uniqueCategories,
+    assignments
+  };
+};
+
+const readLocalCategorySettings = (): ItemCategorySettings | null => {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(CATEGORY_SETTINGS_STORAGE_KEY);
+    if (!raw) return null;
+    return normalizeCategorySettings(JSON.parse(raw));
+  } catch (error) {
+    console.warn('Unable to read production category settings from localStorage', error);
+    return null;
+  }
+};
+
+const writeLocalCategorySettings = (settings: ItemCategorySettings) => {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(CATEGORY_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+  } catch (error) {
+    console.warn('Unable to persist production category settings locally', error);
+  }
+};
+
+const getItemCategory = (itemName: string, settings: ItemCategorySettings, siteId?: string): string => {
+  const key = normalizeItemKey(itemName);
+  if (!key) return DEFAULT_ITEM_CATEGORY;
+  const assignment = settings.assignments[key];
+  if (!assignment) return DEFAULT_ITEM_CATEGORY;
+
+  if (siteId && assignment.perSite && assignment.perSite[siteId]) {
+    const siteCategory = assignment.perSite[siteId];
+    const match = settings.categories.find(cat => cat.toLowerCase() === siteCategory.toLowerCase());
+    if (match) return match;
+  }
+
+  if (assignment.global) {
+    const globalCategory = assignment.global;
+    const match = settings.categories.find(cat => cat.toLowerCase() === globalCategory.toLowerCase());
+    if (match) return match;
+  }
+
+  return DEFAULT_ITEM_CATEGORY;
+};
+
+const sanitizeCategoryName = (value: string) => value.trim();
+
+const readResultsBackup = (): ResultsBackupPayload | null => {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(RESULTS_BACKUP_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch (error) {
+    console.warn('Unable to read production sheet backup from localStorage', error);
+    return null;
+  }
+};
+
+const writeResultsBackup = (payload: ResultsBackupPayload) => {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(RESULTS_BACKUP_KEY, JSON.stringify(payload));
+  } catch (error) {
+    console.warn('Unable to persist production sheet backup locally', error);
+  }
+};
+
+const clearResultsBackup = () => {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.removeItem(RESULTS_BACKUP_KEY);
+  } catch (error) {
+    console.warn('Unable to clear production sheet backup', error);
+  }
+};
 
 interface ProductionItemMapping {
   id: string;
@@ -25,31 +303,7 @@ export default function ProductionSheetPanel() {
   const [productionPlanFile, setProductionPlanFile] = useState<File | null>(null);
   const [productionPlan, setProductionPlan] = useState<ProductionPlanItem[]>([]);
   const [productionMappings, setProductionMappings] = useState<ProductionItemMapping[]>([]);
-  const [productionData, setProductionData] = useState<{
-    items: Array<{
-      item: string;
-      avgProduced: string;
-      avgSold: string;
-      recommendedWithBuffer: number;
-      perDay: number;
-      periodsAnalyzed: number;
-      isReduced: boolean;
-      price: string;
-      bufferPercent: string;
-    }>;
-    calculatedBufferPercent: string;
-    reducedItemsAnalyzed: number;
-    totalReduced: string;
-    priceRanges: Array<{
-      range: string;
-      bufferPercent: string;
-      baseRate: string;
-      variability: string;
-      itemCount: number;
-      reducedPrice: number;
-    }>;
-    periodLabels?: string[];
-  } | null>(null);
+  const [productionData, setProductionData] = useState<ProductionResultsState | null>(null);
   const [manualVariability, setManualVariability] = useState<Map<number, number>>(new Map());
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -70,13 +324,132 @@ export default function ProductionSheetPanel() {
   const [showSetupWizard, setShowSetupWizard] = useState(false);
   const [openaiConfigured, setOpenAIConfigured] = useState(false);
   const [checkingOpenAI, setCheckingOpenAI] = useState(true);
+  const [monthsToAnalyze, setMonthsToAnalyze] = useState<number>(MIN_MONTHS_TO_ANALYZE);
+  const [savingPreferences, setSavingPreferences] = useState(false);
+  const [preferencesLoading, setPreferencesLoading] = useState(true);
+  const [preferenceStatus, setPreferenceStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [backupInfo, setBackupInfo] = useState<{ savedAt: string } | null>(null);
+  const [categorySettings, setCategorySettings] = useState<ItemCategorySettings>(defaultCategorySettings);
+  const [categoryFilter, setCategoryFilter] = useState<string>(ALL_CATEGORIES_FILTER);
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [categorySaving, setCategorySaving] = useState(false);
+  const [categoryStatus, setCategoryStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [bulkCategoryMode, setBulkCategoryMode] = useState(false);
+  const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
+  const [bulkCategory, setBulkCategory] = useState(DEFAULT_ITEM_CATEGORY);
+  const getAnalysisDateRange = () => {
+    if (!productionData || !salesPeriodsUsed || salesPeriodsUsed.length === 0) {
+      return null;
+    }
+    
+    // Get the first and last period labels
+    const firstPeriod = salesPeriodsUsed[0];
+    const lastPeriod = salesPeriodsUsed[salesPeriodsUsed.length - 1];
+    
+    return {
+      from: firstPeriod,
+      to: lastPeriod,
+      count: salesPeriodsUsed.length
+    };
+  };
+
+  const analysisDateRange = getAnalysisDateRange();
+  const analysisMonths = productionData?.monthsUsed ?? productionData?.monthsRequested ?? monthsToAnalyze;
+  const todayWeekday = getDefaultWeekday();
+  const availableCategories = categorySettings.categories;
+  const categorizedItems = useMemo<CategorizedProductionItem[]>(() => {
+    if (!productionData) return [];
+    return productionData.items.map((item) => {
+      const category = getItemCategory(item.item, categorySettings, selectedSite);
+      const hasSiteOverride = !!selectedSite && categorySettings.assignments[normalizeItemKey(item.item)]?.perSite?.[selectedSite];
+      return {
+        ...item,
+        category,
+        categoryScope: hasSiteOverride ? 'site' : 'global'
+      };
+    });
+  }, [productionData, categorySettings, selectedSite]);
+  const categorizedNonTotal = useMemo(
+    () => categorizedItems.filter(item => item.item.toLowerCase() !== 'total'),
+    [categorizedItems]
+  );
+  const totalRowItem = useMemo(
+    () => categorizedItems.find(item => item.item.toLowerCase() === 'total'),
+    [categorizedItems]
+  );
+  const filteredItems = useMemo(() => {
+    const base =
+      categoryFilter === ALL_CATEGORIES_FILTER
+        ? categorizedNonTotal
+        : categorizedNonTotal.filter(item => item.category === categoryFilter);
+    return totalRowItem ? [...base, totalRowItem] : base;
+  }, [categorizedNonTotal, totalRowItem, categoryFilter]);
+  const categoryCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    availableCategories.forEach(cat => counts.set(cat, 0));
+    categorizedNonTotal.forEach(item => {
+      const category = item.category || DEFAULT_ITEM_CATEGORY;
+      counts.set(category, (counts.get(category) ?? 0) + 1);
+    });
+    return counts;
+  }, [categorizedNonTotal, availableCategories]);
+
+  const persistResultsBackup = (data: ProductionResultsState, periods: string[]) => {
+    const payload: ResultsBackupPayload = {
+      savedAt: new Date().toISOString(),
+      data,
+      salesPeriods: periods
+    };
+    writeResultsBackup(payload);
+    setBackupInfo({ savedAt: payload.savedAt });
+  };
+
+  const handleClearBackup = () => {
+    clearResultsBackup();
+    setBackupInfo(null);
+  };
 
   useEffect(() => {
     loadProductionMappings();
     loadSites();
     loadItemAliases();
     checkOpenAIConfig();
+    loadPreferences();
+    loadCategorySettings();
   }, []);
+
+  useEffect(() => {
+    const backup = readResultsBackup();
+    if (backup) {
+      setProductionData(backup.data);
+      setSalesPeriodsUsed(backup.salesPeriods);
+      setBackupInfo({ savedAt: backup.savedAt });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!salesFile || loading || preferencesLoading) return;
+    processSalesFile();
+  }, [monthsToAnalyze]);
+
+  useEffect(() => {
+    if (!preferenceStatus) return;
+    const timeout = setTimeout(() => setPreferenceStatus(null), 4000);
+    return () => clearTimeout(timeout);
+  }, [preferenceStatus]);
+
+  useEffect(() => {
+    if (!categoryStatus) return;
+    const timeout = setTimeout(() => setCategoryStatus(null), 4000);
+    return () => clearTimeout(timeout);
+  }, [categoryStatus]);
+
+  useEffect(() => {
+    if (categoryFilter === ALL_CATEGORIES_FILTER) return;
+    if (!availableCategories.includes(categoryFilter)) {
+      setCategoryFilter(ALL_CATEGORIES_FILTER);
+    }
+  }, [categoryFilter, availableCategories]);
 
 
   const checkOpenAIConfig = async () => {
@@ -97,6 +470,25 @@ export default function ProductionSheetPanel() {
     }
   };
 
+  const applyPreferenceChange = async (changes: Partial<ProductionSheetPreferences>) => {
+    if (preferencesLoading) return;
+    const nextPrefs = normalizePreferences({
+      monthsToAnalyze,
+      ...changes
+    });
+    setMonthsToAnalyze(nextPrefs.monthsToAnalyze);
+    await savePreferences(nextPrefs);
+    
+    // Reprocess sales data if available to update production requirements
+    if (productionData && salesFile) {
+      await processSalesFile();
+    }
+  };
+
+  const handleMonthsPreferenceChange = (value: number) => {
+    void applyPreferenceChange({ monthsToAnalyze: value });
+  };
+
   const loadItemAliases = async () => {
     try {
       const { data, error } = await supabase
@@ -109,6 +501,270 @@ export default function ProductionSheetPanel() {
     } catch (err: any) {
       console.error('Error loading item aliases:', err);
     }
+  };
+
+  const loadPreferences = async () => {
+    setPreferencesLoading(true);
+    try {
+      const localPrefs = readLocalPreferences();
+      if (localPrefs) {
+        setMonthsToAnalyze(localPrefs.monthsToAnalyze);
+      }
+
+      const { data, error } = await supabase
+        .from('app_settings')
+        .select('setting_value')
+        .eq('setting_key', 'production_sheet_preferences')
+        .maybeSingle();
+
+      if (error) throw error;
+
+      const serverValue = data?.setting_value;
+      let parsedServerPrefs: ProductionSheetPreferences | null = null;
+      if (serverValue) {
+        try {
+          const raw = typeof serverValue === 'string' ? JSON.parse(serverValue) : serverValue;
+          parsedServerPrefs = normalizePreferences(raw);
+        } catch (err) {
+          console.warn('Unable to parse server production sheet preferences', err);
+        }
+      }
+
+      if (parsedServerPrefs) {
+        setMonthsToAnalyze(parsedServerPrefs.monthsToAnalyze);
+        writeLocalPreferences(parsedServerPrefs);
+      }
+    } catch (err) {
+      console.error('Error loading production sheet preferences:', err);
+    } finally {
+      setPreferencesLoading(false);
+    }
+  };
+
+  const savePreferences = async (prefs: ProductionSheetPreferences) => {
+    setSavingPreferences(true);
+    setPreferenceStatus(null);
+    try {
+      writeLocalPreferences(prefs);
+
+      const { data: { user } } = await supabase.auth.getUser();
+      const { error } = await supabase
+        .from('app_settings')
+        .upsert({
+          setting_key: 'production_sheet_preferences',
+          setting_value: prefs,
+          updated_by: user?.id ?? null,
+          updated_at: new Date().toISOString()
+        }, {
+          onConflict: 'setting_key'
+        });
+
+      if (error) throw error;
+      setPreferenceStatus({ type: 'success', message: 'Preferences saved' });
+    } catch (err) {
+      console.error('Error saving production sheet preferences:', err);
+      setPreferenceStatus({ type: 'error', message: 'Failed to save preferences. Please try again.' });
+    } finally {
+      setSavingPreferences(false);
+    }
+  };
+
+  const loadCategorySettings = async () => {
+    const localSettings = readLocalCategorySettings();
+    if (localSettings) {
+      setCategorySettings(localSettings);
+    } else {
+      setCategorySettings(defaultCategorySettings);
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from('app_settings')
+        .select('setting_value')
+        .eq('setting_key', CATEGORY_SETTINGS_APP_KEY)
+        .maybeSingle();
+
+      if (error) throw error;
+
+      const serverValue = data?.setting_value;
+      if (serverValue) {
+        const parsed = typeof serverValue === 'string' ? JSON.parse(serverValue) : serverValue;
+        const normalized = normalizeCategorySettings(parsed);
+        setCategorySettings(normalized);
+        writeLocalCategorySettings(normalized);
+      }
+    } catch (err) {
+      console.error('Error loading production categories:', err);
+    }
+  };
+
+  const persistCategorySettings = async (settings: ItemCategorySettings, options?: { showStatus?: boolean }) => {
+    const showStatus = options?.showStatus !== false;
+    setCategorySaving(true);
+    if (showStatus) {
+      setCategoryStatus(null);
+    }
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      const { error } = await supabase
+        .from('app_settings')
+        .upsert({
+          setting_key: CATEGORY_SETTINGS_APP_KEY,
+          setting_value: settings,
+          updated_by: user?.id ?? null,
+          updated_at: new Date().toISOString()
+        }, {
+          onConflict: 'setting_key'
+        });
+
+      if (error) throw error;
+      if (showStatus) {
+        setCategoryStatus({ type: 'success', message: 'Categories saved' });
+      }
+    } catch (err) {
+      console.error('Error saving production categories:', err);
+      if (showStatus) {
+        setCategoryStatus({ type: 'error', message: 'Failed to save categories. Please try again.' });
+      }
+    } finally {
+      setCategorySaving(false);
+    }
+  };
+
+  const updateCategorySettings = (updater: (prev: ItemCategorySettings) => ItemCategorySettings, options?: { showStatus?: boolean }) => {
+    setCategorySettings((prev) => {
+      const next = normalizeCategorySettings(updater(prev));
+      writeLocalCategorySettings(next);
+      void persistCategorySettings(next, options);
+      return next;
+    });
+  };
+
+  const handleAddCategory = () => {
+    const trimmed = sanitizeCategoryName(newCategoryName);
+    if (!trimmed) {
+      setCategoryStatus({ type: 'error', message: 'Enter a category name before adding.' });
+      return;
+    }
+    if (availableCategories.some(cat => cat.toLowerCase() === trimmed.toLowerCase())) {
+      setCategoryStatus({ type: 'error', message: 'That category already exists.' });
+      return;
+    }
+    updateCategorySettings((prev) => ({
+      ...prev,
+      categories: [...prev.categories, trimmed]
+    }), { showStatus: false });
+    setNewCategoryName('');
+    setCategoryStatus({ type: 'success', message: `Category "${trimmed}" added.` });
+  };
+
+  const handleRemoveCategory = (category: string) => {
+    if (category === DEFAULT_ITEM_CATEGORY) return;
+    updateCategorySettings((prev) => {
+      const remaining = prev.categories.filter(cat => cat.toLowerCase() !== category.toLowerCase());
+      const nextAssignments = { ...prev.assignments };
+      Object.entries(nextAssignments).forEach(([itemKey, assigned]) => {
+        const assignmentValue = assigned as any;
+        const globalCategory = assignmentValue.global;
+        if (globalCategory && globalCategory.toLowerCase() === category.toLowerCase()) {
+          delete nextAssignments[itemKey];
+        } else if (assignmentValue.perSite) {
+          const hasMatchingSite = Object.values(assignmentValue.perSite).some(
+            (siteCategory: unknown) => typeof siteCategory === 'string' && siteCategory.toLowerCase() === category.toLowerCase()
+          );
+          if (hasMatchingSite) {
+            delete nextAssignments[itemKey];
+          }
+        }
+      });
+      return {
+        categories: remaining.length > 0 ? remaining : [DEFAULT_ITEM_CATEGORY],
+        assignments: nextAssignments
+      };
+    }, { showStatus: false });
+    if (categoryFilter.toLowerCase() === category.toLowerCase()) {
+      setCategoryFilter(ALL_CATEGORIES_FILTER);
+    }
+    setCategoryStatus({ type: 'success', message: `Category "${category}" removed.` });
+  };
+
+  const handleCategoryFilterChange = (value: string) => {
+    setCategoryFilter(value);
+  };
+
+  const handleAssignCategory = (itemName: string, category: string, scope: CategoryScope, siteId?: string) => {
+    const selectedCategory = availableCategories.find(cat => cat === category) ?? DEFAULT_ITEM_CATEGORY;
+    updateCategorySettings((prev) => {
+      const key = normalizeItemKey(itemName);
+      if (!key) return prev;
+
+      const nextAssignments = { ...prev.assignments };
+      const currentAssignment = nextAssignments[key] || {};
+      const newAssignment = { ...currentAssignment } as { global?: string; perSite?: Record<string, string> };
+
+      if (scope === 'global') {
+        if (selectedCategory === DEFAULT_ITEM_CATEGORY) {
+          delete newAssignment.global;
+        } else {
+          newAssignment.global = selectedCategory;
+        }
+      } else if (scope === 'site' && siteId) {
+        if (!newAssignment.perSite) {
+          newAssignment.perSite = {};
+        }
+        if (selectedCategory === DEFAULT_ITEM_CATEGORY) {
+          delete newAssignment.perSite[siteId];
+          if (Object.keys(newAssignment.perSite).length === 0) {
+            delete newAssignment.perSite;
+          }
+        } else {
+          newAssignment.perSite[siteId] = selectedCategory;
+        }
+      }
+
+      if (Object.keys(newAssignment).length === 0) {
+        delete nextAssignments[key];
+      } else {
+        nextAssignments[key] = newAssignment;
+      }
+
+      return {
+        ...prev,
+        assignments: nextAssignments
+      };
+    }, { showStatus: false });
+  };
+
+  const handleBulkAssignCategory = () => {
+    if (selectedItems.size === 0) return;
+    
+    selectedItems.forEach(itemName => {
+      handleAssignCategory(itemName, bulkCategory, 'global', selectedSite);
+    });
+    
+    setSelectedItems(new Set());
+    setCategoryStatus({ type: 'success', message: `Assigned ${selectedItems.size} items to "${bulkCategory}"` });
+  };
+
+  const toggleItemSelection = (itemName: string) => {
+    setSelectedItems(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(itemName)) {
+        newSet.delete(itemName);
+      } else {
+        newSet.add(itemName);
+      }
+      return newSet;
+    });
+  };
+
+  const selectAllVisible = () => {
+    const visibleItems = filteredItems.map(item => item.item);
+    setSelectedItems(new Set(visibleItems));
+  };
+
+  const clearSelection = () => {
+    setSelectedItems(new Set());
   };
 
   const loadProductionMappings = async () => {
@@ -233,35 +889,62 @@ export default function ProductionSheetPanel() {
     return null;
   };
 
-  const groupRowsByRecentMonths = (rows: any[]) => {
-    const monthMap = new Map<string, { label: string; rows: any[] }>();
+  const groupRowsByRecentMonths = (
+    rows: any[],
+    options: { monthsToAnalyze: number }
+  ): GroupedRowsResult => {
+    const monthLimit = clampMonthCount(options.monthsToAnalyze ?? MIN_MONTHS_TO_ANALYZE);
+    const monthMap = new Map<string, { label: string; rows: SalesRowWithDate[] }>();
 
     rows.forEach(row => {
       const dateValue = extractDateFromRow(row);
       if (!dateValue) return;
+
+      const annotatedRow: SalesRowWithDate = {
+        ...row,
+        __parsedDate: dateValue
+      };
+
       const key = `${dateValue.getFullYear()}-${String(dateValue.getMonth() + 1).padStart(2, '0')}`;
       const label = dateValue.toLocaleString('en-GB', { month: 'short', year: 'numeric' });
 
       if (!monthMap.has(key)) {
         monthMap.set(key, { label, rows: [] });
       }
-      monthMap.get(key)!.rows.push(row);
+      const bucket = monthMap.get(key)!;
+      bucket.rows.push(annotatedRow);
     });
 
     const sortedKeys = Array.from(monthMap.keys()).sort((a, b) => (a < b ? 1 : -1));
 
     if (sortedKeys.length === 0) {
+      const fallbackRows: SalesRowWithDate[] = rows.length
+        ? rows.map(row => ({ ...row, __parsedDate: null }))
+        : [];
+
       return {
-        dataArrays: rows.length ? [rows] : [],
-        labels: rows.length ? ['All Data'] : []
+        dataArrays: fallbackRows.length ? [fallbackRows] : [],
+        labels: fallbackRows.length ? ['All Data'] : [],
+        monthsUsed: fallbackRows.length ? 1 : 0
       };
     }
 
-    const selectedKeys = sortedKeys.slice(0, 3);
-    const dataArrays = selectedKeys.map(key => monthMap.get(key)!.rows);
+    // Use the minimum of requested months and available months
+    const availableMonths = Math.min(monthLimit, sortedKeys.length);
+    const selectedKeys = sortedKeys.slice(0, availableMonths);
+
+    const dataArrays = selectedKeys.map(key => {
+      const bucket = monthMap.get(key)!;
+      return bucket.rows;
+    });
+
     const labels = selectedKeys.map(key => monthMap.get(key)!.label);
 
-    return { dataArrays, labels };
+    return {
+      dataArrays,
+      labels,
+      monthsUsed: selectedKeys.length
+    };
   };
 
   const performFuzzyMatching = async (planItems: ProductionPlanItem[]) => {
@@ -323,15 +1006,45 @@ export default function ProductionSheetPanel() {
       }
 
       const fileData = await readExcelFile(salesFile);
-      const { dataArrays, labels } = groupRowsByRecentMonths(fileData);
+      const grouping = groupRowsByRecentMonths(fileData, {
+        monthsToAnalyze
+      });
 
-      if (dataArrays.length === 0) {
+      if (grouping.dataArrays.length === 0) {
         throw new Error('No dated sales rows were found. Please ensure the file contains a Date column.');
       }
 
-      const averaged = calculateAverages(dataArrays, labels);
-      setProductionData(averaged);
-      setSalesPeriodsUsed(averaged.periodLabels || []);
+      const averaged = calculateAverages(
+        grouping.dataArrays,
+        grouping.labels
+      );
+      const enrichedData: ProductionResultsState = {
+        ...averaged,
+        monthsRequested: monthsToAnalyze,
+        monthsUsed: grouping.monthsUsed
+      };
+      const periodLabels = averaged.periodLabels || grouping.labels;
+
+      setProductionData(enrichedData);
+      setSalesPeriodsUsed(periodLabels);
+      persistResultsBackup(enrichedData, periodLabels);
+
+      // Save sales history to Supabase for the selected site
+      if (selectedSite) {
+        const { error: saveError } = await supabase
+          .from('production_sales_histories')
+          .insert({
+            site_id: selectedSite,
+            source_filename: salesFile.name,
+            months_requested: monthsToAnalyze,
+            months_used: grouping.monthsUsed,
+            periods: periodLabels,
+            data: enrichedData
+          });
+        if (saveError) {
+          console.warn('Failed to save sales history:', saveError);
+        }
+      }
     } catch (err) {
       setError(`Error processing files: ${(err as Error).message}`);
       console.error('Processing error:', err);
@@ -378,10 +1091,14 @@ export default function ProductionSheetPanel() {
     });
   };
 
-  const calculateAverages = (dataArrays: any[][], periodLabels: string[] = []) => {
+  const calculateAverages = (
+    dataArrays: any[][],
+    periodLabels: string[] = []
+  ) => {
     const itemMap = new Map<string, { production: number[]; sales: number[]; isReduced: boolean; prices: number[]; reducedPrice?: number }>();
     const reducedItemsMap = new Map<string, number[]>();
     const reducedByPriceMap = new Map<number, { reducedQty: number; producedQty: number }>();
+    const weekdayStatsMap = new Map<string, { salesTotals: number[]; entryCounts: number[] }>();
 
     dataArrays.forEach((periodRows) => {
       const periodItemMap = new Map<string, {
@@ -456,6 +1173,24 @@ export default function ProductionSheetPanel() {
         }
         if (!isNaN(salesValue) && salesValue > 0) {
           itemAggregates.salesValueSum += salesValue;
+        }
+
+        const parsedDate: Date | null = row.__parsedDate instanceof Date
+          ? row.__parsedDate
+          : extractDateFromRow(row);
+        if (parsedDate && !Number.isNaN(parsedDate.getTime())) {
+          const weekday = parsedDate.getDay() as WeekdayIndex;
+          if (!weekdayStatsMap.has(cleanName)) {
+            weekdayStatsMap.set(cleanName, {
+              salesTotals: createWeekdayNumberArray(),
+              entryCounts: createWeekdayNumberArray()
+            });
+          }
+          const weekdayStats = weekdayStatsMap.get(cleanName)!;
+          if (!Number.isNaN(salesVolume) && salesVolume >= 0) {
+            weekdayStats.salesTotals[weekday] += salesVolume;
+            weekdayStats.entryCounts[weekday] += 1;
+          }
         }
       });
 
@@ -632,6 +1367,7 @@ export default function ProductionSheetPanel() {
       avgSold: string;
       recommendedWithBuffer: number;
       perDay: number;
+      weekdayRecommendations: number[];
       periodsAnalyzed: number;
       isReduced: boolean;
       price: string;
@@ -643,7 +1379,8 @@ export default function ProductionSheetPanel() {
       avgSold: 0,
       recommendedWithBuffer: 0,
       price: 0,
-      priceCount: 0
+      priceCount: 0,
+      weekdayTotals: createWeekdayNumberArray()
     };
 
     itemMap.forEach((data, itemName) => {
@@ -664,7 +1401,19 @@ export default function ProductionSheetPanel() {
       const bufferMultiplier = 1 + (itemBufferPercent / 100);
 
       const recommendedWithBuffer = Math.ceil(avgSold * bufferMultiplier);
-      const perDay = Math.ceil(recommendedWithBuffer / 7);
+
+      const weekdayStats = weekdayStatsMap.get(itemName);
+      const weekdayRecommendations = WEEKDAY_ORDER.map((weekday) => {
+        let base = 0;
+        if (weekdayStats && weekdayStats.entryCounts[weekday] > 0) {
+          base = weekdayStats.salesTotals[weekday] / weekdayStats.entryCounts[weekday];
+        } else {
+          base = avgSold > 0 ? avgSold / 7 : 0;
+        }
+        return Math.ceil(base * bufferMultiplier);
+      });
+
+      let perDay = Math.ceil(recommendedWithBuffer / 7);
 
       totalRow.avgProduced += avgProduced;
       totalRow.avgSold += avgSold;
@@ -673,6 +1422,9 @@ export default function ProductionSheetPanel() {
         totalRow.price += avgPrice;
         totalRow.priceCount++;
       }
+      WEEKDAY_ORDER.forEach((weekday) => {
+        totalRow.weekdayTotals[weekday] += weekdayRecommendations[weekday];
+      });
 
       results.push({
         item: itemName,
@@ -680,6 +1432,7 @@ export default function ProductionSheetPanel() {
         avgSold: avgSold.toFixed(2),
         recommendedWithBuffer,
         perDay,
+        weekdayRecommendations,
         periodsAnalyzed: Math.max(data.production.length, data.sales.length),
         isReduced: data.isReduced,
         price: avgPrice > 0 ? avgPrice.toFixed(2) : 'N/A',
@@ -696,7 +1449,10 @@ export default function ProductionSheetPanel() {
       avgProduced: totalRow.avgProduced.toFixed(2),
       avgSold: totalRow.avgSold.toFixed(2),
       recommendedWithBuffer: totalRow.recommendedWithBuffer,
-      perDay: Math.ceil(totalRow.recommendedWithBuffer / 7),
+      perDay: totalRow.weekdayTotals.reduce((sum, val) => sum + val, 0) > 0
+        ? Math.ceil(totalRow.weekdayTotals.reduce((sum, val) => sum + val, 0) / 7)
+        : Math.ceil(totalRow.recommendedWithBuffer / 7),
+      weekdayRecommendations: totalRow.weekdayTotals.map(value => Math.ceil(value)),
       periodsAnalyzed: dataArrays.length,
       isReduced: false,
       price: totalRow.priceCount > 0 ? (totalRow.price / totalRow.priceCount).toFixed(2) : 'N/A',
@@ -1089,7 +1845,7 @@ export default function ProductionSheetPanel() {
 
             <div className="p-4 bg-orange-50 rounded-lg border border-orange-200 mb-4 space-y-2 text-sm text-gray-700">
               <p>
-                Upload a <strong>single Excel file</strong> that contains all sales rows for recent months. The system will automatically detect the last 3 months present in the file.
+                Upload a <strong>single Excel file</strong> that contains all sales rows for recent months. The system will automatically detect up to the last 6 months present in the file.
               </p>
               <ul className="list-disc list-inside space-y-1 text-xs">
                 <li>Required columns: <strong>Site Name</strong>, <strong>Date</strong>, <strong>Item Name</strong>, <strong>Sales Volume</strong>, <strong>Production Quantity</strong> (optional) and <strong>Sales Value</strong> or <strong>Price</strong>.</li>
@@ -1322,6 +2078,235 @@ export default function ProductionSheetPanel() {
 
           {productionData && (
             <div>
+              <div className="mb-8 grid gap-6 lg:grid-cols-3">
+                <div className="lg:col-span-2 bg-white rounded-xl border border-gray-200 shadow-sm p-6">
+                  <div className="flex items-center justify-between mb-4">
+                    <div>
+                      <h3 className="text-lg font-semibold text-gray-800">Analysis preferences</h3>
+                      <p className="text-sm text-gray-500">
+                        Adjust the monthly window and weekday alignment to re-run calculations instantly.
+                      </p>
+                    </div>
+                    {savingPreferences && (
+                      <span className="text-xs text-orange-600 font-semibold">Saving…</span>
+                    )}
+                  </div>
+
+                  <div className="space-y-6">
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-sm font-semibold text-gray-700">
+                          Months to average: <span className="text-orange-600">{monthsToAnalyze}</span>
+                        </span>
+                        <span className="text-xs text-gray-500">
+                          min {MIN_MONTHS_TO_ANALYZE} • max {MAX_MONTHS_TO_ANALYZE}
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={MIN_MONTHS_TO_ANALYZE}
+                        max={MAX_MONTHS_TO_ANALYZE}
+                        step={1}
+                        value={monthsToAnalyze}
+                        onChange={(e) => handleMonthsPreferenceChange(Number(e.target.value))}
+                        disabled={preferencesLoading || loading}
+                        className="w-full accent-orange-500"
+                      />
+                      <div className="flex justify-between text-[10px] uppercase tracking-wide text-gray-500 mt-1">
+                        {MONTH_OPTIONS.map((month) => (
+                          <span key={month} className={month === monthsToAnalyze ? 'text-orange-600 font-semibold' : ''}>
+                            {month}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="grid gap-3 sm:grid-cols-2 text-sm text-gray-600">
+                      <div className="p-3 rounded-lg bg-gray-50 border border-gray-200">
+                        {analysisDateRange ? (
+                          <>
+                            Analyzing <span className="font-semibold text-gray-900">{analysisDateRange.count}</span> month
+                            {analysisDateRange.count === 1 ? '' : 's'}: <span className="font-semibold text-gray-900">{analysisDateRange.from}</span> to <span className="font-semibold text-gray-900">{analysisDateRange.to}</span>
+                            <div className="text-xs text-gray-500 mt-1">
+                              (requested {monthsToAnalyze} month{monthsToAnalyze === 1 ? '' : 's'})
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            Analyzing <span className="font-semibold text-gray-900">{analysisMonths}</span> month
+                            {analysisMonths === 1 ? '' : 's'} of data (requested {monthsToAnalyze}).
+                          </>
+                        )}
+                      </div>
+                      <div className="p-3 rounded-lg bg-gray-50 border border-gray-200">
+                        All weekdays shown uniformly
+                        <span className="text-xs text-gray-500 ml-1">
+                          (based on historical sales patterns)
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
+                  <h3 className="text-lg font-semibold text-gray-800 mb-2">Results backup</h3>
+                  {backupInfo ? (
+                    <>
+                      <p className="text-sm text-gray-600 mb-4">
+                        Last successful calculation saved on{' '}
+                        <span className="font-semibold text-gray-900">
+                          {new Date(backupInfo.savedAt).toLocaleString()}
+                        </span>. These results reload automatically if processing fails.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={handleClearBackup}
+                        className="px-4 py-2 text-sm font-semibold rounded-lg border border-gray-300 text-gray-600 hover:text-red-600 hover:border-red-400 transition-colors"
+                      >
+                        Clear backup
+                      </button>
+                    </>
+                  ) : (
+                    <p className="text-sm text-gray-600">
+                      A local backup will be created automatically after you process a file, so you can restore the most recent
+                      recommendations even if a future upload has issues.
+                    </p>
+                  )}
+                </div>
+
+                <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
+                  <div className="flex items-center gap-2 mb-4">
+                    <h3 className="text-lg font-semibold text-gray-800">Categories</h3>
+                    <button
+                      type="button"
+                      onClick={() => setBulkCategoryMode(!bulkCategoryMode)}
+                      className={`px-3 py-1 rounded-lg text-sm font-medium transition-colors ${
+                        bulkCategoryMode
+                          ? 'bg-green-600 text-white'
+                          : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                      }`}
+                    >
+                      {bulkCategoryMode ? 'Exit Bulk Mode' : 'Bulk Assign'}
+                    </button>
+                    {bulkCategoryMode && (
+                      <div className="flex items-center gap-2 ml-auto">
+                        <button
+                          type="button"
+                          onClick={selectAllVisible}
+                          className="px-3 py-1 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
+                        >
+                          Select All
+                        </button>
+                        <button
+                          type="button"
+                          onClick={clearSelection}
+                          className="px-3 py-1 bg-gray-600 text-white rounded-lg text-sm font-medium hover:bg-gray-700 transition-colors"
+                        >
+                          Clear Selection
+                        </button>
+                        <span className="text-sm text-gray-600">
+                          {selectedItems.size} selected
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                  {categoryStatus && (
+                    <div
+                      className={`mb-3 rounded border px-3 py-2 text-sm ${
+                        categoryStatus.type === 'success'
+                          ? 'border-green-200 bg-green-50 text-green-800'
+                          : 'border-red-200 bg-red-50 text-red-800'
+                      }`}
+                    >
+                      {categoryStatus.message}
+                    </div>
+                  )}
+                  {bulkCategoryMode && (
+                    <div className="mb-4 p-3 bg-green-50 rounded-lg border border-green-200">
+                      <div className="flex items-center gap-2">
+                        <label className="text-sm font-semibold text-gray-700">Assign selected to:</label>
+                        <select
+                          value={bulkCategory}
+                          onChange={(e) => setBulkCategory(e.target.value)}
+                          className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                        >
+                          {availableCategories.map((category) => (
+                            <option key={category} value={category}>
+                              {category}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          onClick={handleBulkAssignCategory}
+                          disabled={selectedItems.size === 0}
+                          className="px-4 py-2 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700 font-semibold disabled:opacity-50"
+                        >
+                          Assign ({selectedItems.size})
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={newCategoryName}
+                      onChange={(e) => setNewCategoryName(e.target.value)}
+                      placeholder="e.g. Hot dishes"
+                      className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleAddCategory}
+                      disabled={categorySaving || !newCategoryName.trim()}
+                      className="px-4 py-2 text-sm font-semibold rounded-lg bg-green-600 text-white disabled:opacity-50"
+                    >
+                      Add
+                    </button>
+                  </div>
+                  <div className="mt-4">
+                    <p className="text-xs uppercase tracking-wide text-gray-500 font-semibold">Filter view</p>
+                    <div className="flex flex-wrap gap-2 mt-2">
+                      <button
+                        type="button"
+                        onClick={() => handleCategoryFilterChange(ALL_CATEGORIES_FILTER)}
+                        className={`px-3 py-1 rounded-full text-xs font-semibold border ${
+                          categoryFilter === ALL_CATEGORIES_FILTER
+                            ? 'bg-blue-600 border-blue-600 text-white'
+                            : 'border-gray-300 text-gray-600 hover:border-blue-500 hover:text-blue-600'
+                        }`}
+                      >
+                        All ({categorizedNonTotal.length})
+                      </button>
+                      {availableCategories.map((category) => (
+                        <div key={category} className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => handleCategoryFilterChange(category)}
+                            className={`px-3 py-1 rounded-full text-xs font-semibold border ${
+                              categoryFilter === category
+                                ? 'bg-blue-600 border-blue-600 text-white'
+                                : 'border-gray-300 text-gray-600 hover:border-blue-500 hover:text-blue-600'
+                            }`}
+                          >
+                            {category} ({categoryCounts.get(category) ?? 0})
+                          </button>
+                          {category !== DEFAULT_ITEM_CATEGORY && (
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveCategory(category)}
+                              className="text-xs text-gray-400 hover:text-red-600"
+                            >
+                              ✕
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
               {productionData.priceRanges.length > 0 && (
                 <div className="mb-6 p-4 bg-gradient-to-r from-green-50 to-emerald-50 rounded-lg border border-green-300">
                   <h3 className="font-semibold text-gray-800 mb-3 text-lg">Buffer by Price Range</h3>
@@ -1368,18 +2353,35 @@ export default function ProductionSheetPanel() {
                   Export to Excel
                 </button>
               </div>
+              <div className="mb-4 p-4 rounded-lg border border-blue-200 bg-blue-50 text-sm text-blue-900">
+                Daily recommendations are calculated by averaging actual sales for each weekday across the selected months,
+                then applying the same buffer used for the weekly total. When a weekday has limited history, the system falls
+                back to the buffered weekly average divided across seven days. This keeps production aligned to the specific
+                demand pattern observed for every day of the week.
+              </div>
 
               <div className="overflow-x-auto" style={{maxWidth: '100%', width: '100%'}}>
                 <table className="w-full border-collapse text-sm">
                   <thead>
                     <tr className="bg-gradient-to-r from-orange-500 to-orange-600 text-white">
                       <th className="p-2 text-left font-semibold">Item</th>
+                      <th className="p-2 text-left font-semibold whitespace-nowrap">Category</th>
                       <th className="p-2 text-right font-semibold whitespace-nowrap">Price</th>
                       <th className="p-2 text-right font-semibold whitespace-nowrap">Avg Prod</th>
                       <th className="p-2 text-right font-semibold whitespace-nowrap">Avg Sold</th>
                       <th className="p-2 text-right font-semibold whitespace-nowrap">Buffer %</th>
                       <th className="p-2 text-right font-semibold bg-green-700 whitespace-nowrap">Rec/Week</th>
-                      <th className="p-2 text-right font-semibold bg-green-600 whitespace-nowrap">Rec/Day</th>
+                      <th className="p-2 text-right font-semibold bg-green-600 whitespace-nowrap">
+                        Rec/Day
+                      </th>
+                      {WEEKDAY_ORDER.map((weekday) => (
+                        <th
+                          key={weekday}
+                          className="p-2 text-right font-semibold whitespace-nowrap bg-green-50 text-green-800"
+                        >
+                          {WEEKDAY_LABELS[weekday]}
+                        </th>
+                      ))}
                       {productionPlan.length > 0 && (
                         <>
                           <th className="p-2 text-right font-semibold bg-blue-700 whitespace-nowrap">Plan/Week</th>
@@ -1391,7 +2393,8 @@ export default function ProductionSheetPanel() {
                     </tr>
                   </thead>
                   <tbody>
-                    {productionData.items.map((item, index) => {
+                    {filteredItems.map((item, index) => {
+                      const isTotalRow = item.item.toLowerCase() === 'total';
                       const match = findBestMatch(item.item);
                       const planQtyDay = match ? match.quantity : 0;
                       const planQtyWeek = match ? match.quantity * 7 : 0;
@@ -1400,7 +2403,7 @@ export default function ProductionSheetPanel() {
                       const hasDailyDiff = match && dailyDiff !== 0;
 
                       let rowBgColor = index % 2 === 0 ? 'bg-gray-50' : 'bg-white';
-                      if (item.item.toLowerCase() === 'total') {
+                      if (isTotalRow) {
                         rowBgColor = 'bg-orange-100 font-bold';
                       }
 
@@ -1412,6 +2415,43 @@ export default function ProductionSheetPanel() {
                               <span className={item.item.toLowerCase() === 'total' ? 'font-bold' : ''}>{item.item}</span>
                             </div>
                           </td>
+                          <td className="p-2 text-left border-b text-gray-700 whitespace-nowrap">
+                            {isTotalRow ? (
+                              <span className="text-xs text-gray-500 uppercase tracking-wide">Summary</span>
+                            ) : bulkCategoryMode ? (
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="checkbox"
+                                  checked={selectedItems.has(item.item)}
+                                  onChange={() => toggleItemSelection(item.item)}
+                                  className="rounded border-gray-300 text-green-600 focus:ring-green-500"
+                                />
+                                <select
+                                  value={item.category}
+                                  onChange={(e) => handleAssignCategory(item.item, e.target.value, item.categoryScope, selectedSite)}
+                                  className="text-sm border border-gray-300 rounded-lg px-2 py-1 focus:outline-none focus:ring-2 focus:ring-green-500"
+                                >
+                                  {availableCategories.map((category) => (
+                                    <option key={category} value={category}>
+                                      {category}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+                            ) : (
+                              <select
+                                value={item.category}
+                                onChange={(e) => handleAssignCategory(item.item, e.target.value, item.categoryScope, selectedSite)}
+                                className="text-sm border border-gray-300 rounded-lg px-2 py-1 focus:outline-none focus:ring-2 focus:ring-green-500"
+                              >
+                                {availableCategories.map((category) => (
+                                  <option key={category} value={category}>
+                                    {category}
+                                  </option>
+                                ))}
+                              </select>
+                            )}
+                          </td>
                           <td className="p-2 text-right text-gray-600 border-b whitespace-nowrap">£{item.price}</td>
                           <td className="p-2 text-right text-gray-700 border-b">{item.avgProduced}</td>
                           <td className="p-2 text-right font-semibold text-blue-600 border-b">{item.avgSold}</td>
@@ -1420,6 +2460,18 @@ export default function ProductionSheetPanel() {
                           <td className={`p-2 text-right font-bold border-b bg-green-50 ${
                             hasDailyDiff ? 'text-red-700' : 'text-green-700'
                           }`}>{item.perDay}</td>
+                          {WEEKDAY_ORDER.map((weekday) => {
+                            const value = item.weekdayRecommendations?.[weekday];
+                            const displayValue = typeof value === 'number' && !Number.isNaN(value) ? value : '–';
+                            return (
+                              <td
+                                key={weekday}
+                                className="p-2 text-right border-b font-semibold text-gray-700 bg-white"
+                              >
+                                {displayValue}
+                              </td>
+                            );
+                          })}
                           {productionPlan.length > 0 && (
                             <>
                               <td className="p-2 text-right font-bold text-blue-700 border-b bg-blue-50">
