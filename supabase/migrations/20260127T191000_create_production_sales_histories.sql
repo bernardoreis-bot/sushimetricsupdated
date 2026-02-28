@@ -23,7 +23,7 @@ CREATE POLICY "Authenticated users can insert sales histories"
   ON production_sales_histories
   FOR INSERT
   TO authenticated
-  WITH CHECK (uploaded_by = auth.uid());
+  WITH CHECK (true);
 
 CREATE POLICY "Users can update their own sales histories"
   ON production_sales_histories

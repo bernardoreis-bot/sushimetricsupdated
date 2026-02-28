@@ -5,6 +5,7 @@ import { batchMatchItems, ItemAlias } from '../utils/fuzzyItemMatcher';
 import ItemAliasManager from './ItemAliasManager';
 import MatchReviewModal from './MatchReviewModal';
 import OpenAISetupWizard from './OpenAISetupWizard';
+import DailyProductionSheet from './DailyProductionSheet';
 
 const MIN_MONTHS_TO_ANALYZE = 3;
 const MAX_MONTHS_TO_ANALYZE = 6;
@@ -82,7 +83,7 @@ interface ProductionPlanItem {
   quantity: number;
 }
 
-type ProductionResultsItem = {
+export type ProductionResultsItem = {
   item: string;
   avgProduced: string;
   avgSold: string;
@@ -95,11 +96,11 @@ type ProductionResultsItem = {
   bufferPercent: string;
 };
 
-type CategoryScope = 'global' | 'site';
+export type CategoryScope = 'global' | 'site';
 
-type CategorizedProductionItem = ProductionResultsItem & { category: string; categoryScope: CategoryScope };
+export type CategorizedProductionItem = ProductionResultsItem & { category: string; categoryScope: CategoryScope };
 
-interface ProductionResultsState {
+export interface ProductionResultsState {
   items: ProductionResultsItem[];
   calculatedBufferPercent: string;
   reducedItemsAnalyzed: number;
@@ -337,6 +338,9 @@ export default function ProductionSheetPanel() {
   const [bulkCategoryMode, setBulkCategoryMode] = useState(false);
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
   const [bulkCategory, setBulkCategory] = useState(DEFAULT_ITEM_CATEGORY);
+  const [salesHistories, setSalesHistories] = useState<ProductionSalesHistoryEntry[]>([]);
+  const [loadingHistories, setLoadingHistories] = useState(false);
+  const [showDailyProductionSheet, setShowDailyProductionSheet] = useState(false);
   const getAnalysisDateRange = () => {
     if (!productionData || !salesPeriodsUsed || salesPeriodsUsed.length === 0) {
       return null;
@@ -351,6 +355,20 @@ export default function ProductionSheetPanel() {
       to: lastPeriod,
       count: salesPeriodsUsed.length
     };
+  };
+
+  // Function to calculate rolls needed for roll items
+  const calculateRollsNeeded = (dailyDemand: number, itemName: string): number | null => {
+    // Check if this is a roll item (contains "roll" in the name)
+    const isRollItem = itemName.toLowerCase().includes('roll');
+    
+    if (!isRollItem || dailyDemand <= 0) {
+      return null;
+    }
+    
+    // Calculate rolls needed: daily demand ÷ 12, rounded up
+    const rollsNeeded = Math.ceil(dailyDemand / 12);
+    return rollsNeeded;
   };
 
   const analysisDateRange = getAnalysisDateRange();
@@ -413,10 +431,25 @@ export default function ProductionSheetPanel() {
     loadProductionMappings();
     loadSites();
     loadItemAliases();
-    checkOpenAIConfig();
-    loadPreferences();
     loadCategorySettings();
+    loadPreferences();
   }, []);
+
+  useEffect(() => {
+    if (selectedSite) {
+      console.log('Site changed to:', selectedSite);
+      loadSalesHistories();
+    }
+  }, [selectedSite]);
+
+  useEffect(() => {
+    // Clear production data when switching sites
+    console.log('Clearing production data due to site change');
+    setProductionData(null);
+    setSalesPeriodsUsed([]);
+    setSalesFile(null);
+    setError('');
+  }, [selectedSite]);
 
   useEffect(() => {
     const backup = readResultsBackup();
@@ -763,6 +796,67 @@ export default function ProductionSheetPanel() {
     setSelectedItems(new Set(visibleItems));
   };
 
+  const loadSalesHistories = async () => {
+    if (!selectedSite) return;
+    
+    console.log('Loading sales histories for site:', selectedSite);
+    
+    // Check if user is authenticated
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    console.log('Authenticated user:', user);
+    if (authError) {
+      console.error('Auth error:', authError);
+    }
+    
+    setLoadingHistories(true);
+    try {
+      const { data, error } = await supabase
+        .from('production_sales_histories')
+        .select('*')
+        .eq('site_id', selectedSite)
+        .order('uploaded_at', { ascending: false });
+      
+      if (error) throw error;
+      console.log('Loaded sales histories:', data);
+      setSalesHistories(data || []);
+    } catch (err) {
+      console.error('Error loading sales histories:', err);
+    } finally {
+      setLoadingHistories(false);
+    }
+  };
+
+  const loadSalesHistory = async (history: ProductionSalesHistoryEntry) => {
+    try {
+      setProductionData(history.data);
+      setSalesPeriodsUsed(history.periods || []);
+      persistResultsBackup(history.data, history.periods || []);
+      
+      // Update analysis months to match the loaded history
+      if (history.months_requested) {
+        setMonthsToAnalyze(history.months_requested);
+        await savePreferences(normalizePreferences({ monthsToAnalyze: history.months_requested }));
+      }
+    } catch (err) {
+      console.error('Error loading sales history:', err);
+    }
+  };
+
+  const deleteSalesHistory = async (historyId: string) => {
+    try {
+      const { error } = await supabase
+        .from('production_sales_histories')
+        .delete()
+        .eq('id', historyId);
+      
+      if (error) throw error;
+      
+      await loadSalesHistories();
+    } catch (err) {
+      console.error('Error deleting sales history:', err);
+    }
+  };
+
   const clearSelection = () => {
     setSelectedItems(new Set());
   };
@@ -788,6 +882,7 @@ export default function ProductionSheetPanel() {
     if (error) {
       console.error('Error loading sites:', error);
     } else {
+      console.log('Loaded sites:', data);
       setSites(data || []);
     }
   };
@@ -1031,6 +1126,13 @@ export default function ProductionSheetPanel() {
 
       // Save sales history to Supabase for the selected site
       if (selectedSite) {
+        console.log('Saving sales history for site:', selectedSite);
+        console.log('Period labels:', periodLabels);
+        
+        // Get current user
+        const { data: { user } } = await supabase.auth.getUser();
+        console.log('Current user for save:', user);
+        
         const { error: saveError } = await supabase
           .from('production_sales_histories')
           .insert({
@@ -1039,10 +1141,15 @@ export default function ProductionSheetPanel() {
             months_requested: monthsToAnalyze,
             months_used: grouping.monthsUsed,
             periods: periodLabels,
-            data: enrichedData
+            data: enrichedData,
+            uploaded_by: user?.id
           });
         if (saveError) {
           console.warn('Failed to save sales history:', saveError);
+        } else {
+          console.log('Sales history saved successfully');
+          // Reload histories to show the new one
+          await loadSalesHistories();
         }
       }
     } catch (err) {
@@ -1898,11 +2005,25 @@ export default function ProductionSheetPanel() {
           <button
             onClick={processSalesFile}
             disabled={!salesFile || loading}
-            className="w-full bg-orange-500 hover:bg-orange-600 disabled:bg-gray-400 text-white font-bold py-4 px-6 rounded-xl flex items-center justify-center gap-3 transition-colors mb-8"
+            className="w-full bg-orange-500 hover:bg-orange-600 disabled:bg-gray-400 text-white font-bold py-4 px-6 rounded-xl flex items-center justify-center gap-3 transition-colors mb-4"
           >
             <Calculator className="w-5 h-5" />
             {loading ? 'Processing...' : 'Calculate Production Requirements'}
           </button>
+
+          {productionData && (
+            <button
+              onClick={() => {
+                console.log('Button clicked, current state:', showDailyProductionSheet);
+                console.log('Production data available:', !!productionData);
+                setShowDailyProductionSheet(!showDailyProductionSheet);
+              }}
+              className="w-full bg-purple-500 hover:bg-purple-600 text-white font-bold py-3 px-6 rounded-xl flex items-center justify-center gap-3 transition-colors mb-8"
+            >
+              <Settings className="w-5 h-5" />
+              {showDailyProductionSheet ? 'Hide Daily Production Sheet' : 'Show Daily Production Sheet'}
+            </button>
+          )}
 
           {productionData && (
             <>
@@ -2076,6 +2197,13 @@ export default function ProductionSheetPanel() {
             </>
           )}
 
+          {/* Daily Production Sheet */}
+          {productionData && showDailyProductionSheet && (
+            <div className="mb-8">
+              <DailyProductionSheet productionData={productionData} />
+            </div>
+          )}
+
           {productionData && (
             <div>
               <div className="mb-8 grid gap-6 lg:grid-cols-3">
@@ -2149,28 +2277,71 @@ export default function ProductionSheetPanel() {
                 </div>
 
                 <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
-                  <h3 className="text-lg font-semibold text-gray-800 mb-2">Results backup</h3>
-                  {backupInfo ? (
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-lg font-semibold text-gray-800">Sales History</h3>
+                    {!selectedSite && (
+                      <span className="text-sm text-amber-600 font-medium">Select a site to view history</span>
+                    )}
+                  </div>
+                  
+                  {selectedSite ? (
                     <>
-                      <p className="text-sm text-gray-600 mb-4">
-                        Last successful calculation saved on{' '}
-                        <span className="font-semibold text-gray-900">
-                          {new Date(backupInfo.savedAt).toLocaleString()}
-                        </span>. These results reload automatically if processing fails.
-                      </p>
-                      <button
-                        type="button"
-                        onClick={handleClearBackup}
-                        className="px-4 py-2 text-sm font-semibold rounded-lg border border-gray-300 text-gray-600 hover:text-red-600 hover:border-red-400 transition-colors"
-                      >
-                        Clear backup
-                      </button>
+                      {loadingHistories ? (
+                        <div className="flex items-center justify-center py-8">
+                          <Loader className="w-6 h-6 animate-spin text-gray-400 mr-2" />
+                          <span className="text-sm text-gray-600">Loading sales histories...</span>
+                        </div>
+                      ) : salesHistories.length === 0 ? (
+                        <div className="text-center py-8">
+                          <p className="text-sm text-gray-500 mb-2">No sales histories found for this site</p>
+                          <p className="text-xs text-gray-400">Upload and process sales files to save them here</p>
+                        </div>
+                      ) : (
+                        <div className="space-y-3">
+                          {salesHistories.map((history) => (
+                            <div key={history.id} className="border border-gray-200 rounded-lg p-3 hover:bg-gray-50 transition-colors">
+                              <div className="flex items-start justify-between">
+                                <div className="flex-1">
+                                  <div className="flex items-center gap-2 mb-1">
+                                    <h4 className="font-medium text-gray-800 text-sm">
+                                      {history.source_filename || 'Unknown file'}
+                                    </h4>
+                                    <span className="text-xs text-gray-500">
+                                      {new Date(history.uploaded_at).toLocaleDateString()}
+                                    </span>
+                                  </div>
+                                  <div className="text-xs text-gray-600 space-y-1">
+                                    <div>Periods: {history.periods?.join(', ') || 'Unknown'}</div>
+                                    <div>Months: {history.months_used} used, {history.months_requested} requested</div>
+                                    <div>Items analyzed: {history.data.items.length}</div>
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => loadSalesHistory(history)}
+                                    className="px-3 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700 transition-colors"
+                                  >
+                                    Load
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => deleteSalesHistory(history.id)}
+                                    className="px-3 py-1 bg-red-600 text-white text-xs rounded hover:bg-red-700 transition-colors"
+                                  >
+                                    Delete
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </>
                   ) : (
-                    <p className="text-sm text-gray-600">
-                      A local backup will be created automatically after you process a file, so you can restore the most recent
-                      recommendations even if a future upload has issues.
-                    </p>
+                    <div className="text-center py-8">
+                      <p className="text-sm text-gray-500">Select a site above to view and manage sales histories</p>
+                    </div>
                   )}
                 </div>
 

@@ -19,6 +19,7 @@
     "@sparticuz/chromium": "^141.0.0",
     "@supabase/supabase-js": "^2.57.4",
     "chrome-aws-lambda": "^10.1.0",
+    "express": "^5.2.1",
     "lucide-react": "^0.344.0",
     "openai": "^6.15.0",
     "pdfjs-dist": "^5.4.296",
