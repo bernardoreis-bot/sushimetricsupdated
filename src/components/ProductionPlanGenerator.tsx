@@ -126,8 +126,49 @@ function addDays(date: Date, days: number): Date {
   return d;
 }
 
-function getPriceBand(salesValue: number, productionQty: number): number {
-  const avgPrice = productionQty > 0 ? salesValue / productionQty : salesValue;
+function parseDate(raw: string): Date | null {
+  const s = raw.trim();
+  if (!s) return null;
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) {
+    const d = new Date(s + 'T00:00:00');
+    return isNaN(d.getTime()) ? null : d;
+  }
+  if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(s)) {
+    const [dd, mm, yyyy] = s.split('/').map(Number);
+    const d = new Date(yyyy, mm - 1, dd);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  if (/^\d{1,2}-\d{1,2}-\d{4}$/.test(s)) {
+    const [dd, mm, yyyy] = s.split('-').map(Number);
+    const d = new Date(yyyy, mm - 1, dd);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  if (/^\d{1,2}\/\d{1,2}\/\d{2}$/.test(s)) {
+    const [dd, mm, yy] = s.split('/').map(Number);
+    const yyyy = yy > 50 ? 1900 + yy : 2000 + yy;
+    const d = new Date(yyyy, mm - 1, dd);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  if (/^\d{4}\d{2}\d{2}$/.test(s)) {
+    const yyyy = Number(s.slice(0, 4));
+    const mm = Number(s.slice(4, 6)) - 1;
+    const dd = Number(s.slice(6, 8));
+    const d = new Date(yyyy, mm, dd);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+function dateKey(d: Date): string {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function getPriceBand(salesValue: number, salesVolume: number, productionQty: number): number {
+  const avgPrice = salesVolume > 0 ? salesValue / salesVolume : (productionQty > 0 ? salesValue / productionQty : 0);
   for (const band of PRICE_BANDS) {
     if (band.label === '< £3' && avgPrice < 3) return band.buffer;
     if (band.max && avgPrice >= (band.min || 0) && avgPrice < band.max) return band.buffer;
@@ -172,7 +213,7 @@ export default function ProductionPlanGenerator() {
   });
   const [showParams, setShowParams] = useState(false);
   const [parsedInfo, setParsedInfo] = useState<{ total: number; valid: number; excluded: number; columns?: string[]; missingCols?: number } | null>(null);
-  const [categoryPrompt, setCategoryPrompt] = useState<string | null>(null);
+  const [debugInfo, setDebugInfo] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -247,14 +288,32 @@ export default function ProductionPlanGenerator() {
   const generatePlan = useCallback(() => {
     if (data.length === 0) return;
 
-    const startDate = new Date(weekStart);
+    const startDate = parseDate(weekStart)!;
     const historyStart = new Date(startDate);
     historyStart.setDate(historyStart.getDate() - historyWeeks * 7);
 
+    const rowDates: Map<CleanedRow, Date> = new Map();
+    for (const row of data) {
+      const d = parseDate(row.date);
+      if (d) rowDates.set(row, d);
+    }
+
     const filtered = data.filter(row => {
-      const rowDate = new Date(row.date);
+      const rowDate = rowDates.get(row);
+      if (!rowDate) return false;
       return rowDate >= historyStart && rowDate < startDate;
     });
+
+    if (filtered.length === 0) {
+      const sampleDates = data.slice(0, 10).map(r => r.date).join(', ');
+      const msg = `No rows in range ${dateKey(historyStart)} to ${dateKey(startDate)}. Sample dates: ${sampleDates}`;
+      console.warn(msg);
+      setDebugInfo(msg);
+      setPlans([]);
+      return;
+    }
+
+    setDebugInfo(`Range: ${dateKey(historyStart)} to ${dateKey(startDate)} — ${filtered.length} rows from ${Object.keys(storeGroups).length} stores`);
 
     const storeGroups: Record<string, CleanedRow[]> = {};
     for (const row of filtered) {
@@ -278,6 +337,7 @@ export default function ProductionPlanGenerator() {
 
       for (const [normName, productRows] of Object.entries(productGroups)) {
         const totalSales = productRows.reduce((s, r) => s + r.salesVolume, 0);
+        const totalSalesValue = productRows.reduce((s, r) => s + r.salesValue, 0);
         const totalProduction = productRows.reduce((s, r) => s + r.productionQty, 0);
         const avgDailySales = totalSales / totalDays;
         const avgDailyProduction = totalProduction / totalDays;
@@ -288,19 +348,17 @@ export default function ProductionPlanGenerator() {
         if (productDays < minHistoryDays) continue;
         if (avgDailySales < minAvgSales) continue;
 
-        const userBuffer = getPriceBand(
-          productRows.reduce((s, r) => s + r.salesValue, 0),
-          totalProduction
-        );
+        const userBuffer = getPriceBand(totalSalesValue, totalSales, totalProduction);
 
         // Group produced products by price band for band-level averaging
         const producedEntries = Object.entries(productGroups).filter(([, pg]) =>
           pg.reduce((s, r) => s + r.productionQty, 0) > 0
         );
         const bandGroups: Record<string, { totalProd: number; count: number }> = {};
-        for (const [pname, pg] of producedEntries) {
+        for (const [, pg] of producedEntries) {
           const band = getPriceBand(
             pg.reduce((s, r) => s + r.salesValue, 0),
+            pg.reduce((s, r) => s + r.salesVolume, 0),
             pg.reduce((s, r) => s + r.productionQty, 0)
           );
           const key = band.toString();
@@ -323,17 +381,19 @@ export default function ProductionPlanGenerator() {
         const bufferedQty = weeklyQty * smartBuffer;
 
         const dailyPlan = DAYS.map((day, idx) => {
-          const dateStr = formatDate(addDays(startDate, idx));
+          const targetDate = addDays(startDate, idx);
+          const targetDow = (idx + 1) % 7;
+          const dateStr = dateKey(targetDate);
           const dayHistory = productRows.filter(r => {
-            const d = new Date(r.date);
-            return d.getDay() === (idx + 1) % 7;
+            const d = parseDate(r.date);
+            return d && d.getDay() === targetDow;
           });
           const dayAvg = dayHistory.length > 0
             ? dayHistory.reduce((s, r) => s + (method === 'production' ? r.productionQty : r.salesVolume), 0) / dayHistory.length
             : 0;
           const totalDayAvg = allDates.filter(d => {
-            const dayOfWeek = new Date(d).getDay();
-            return dayOfWeek === (idx + 1) % 7;
+            const dd = parseDate(d);
+            return dd && dd.getDay() === targetDow;
           }).length;
 
           const weight = totalDayAvg > 0 ? (dayHistory.length / totalDayAvg) : (1 / 7);
@@ -591,6 +651,13 @@ export default function ProductionPlanGenerator() {
                 </div>
               ))}
             </div>
+          </div>
+        )}
+
+        {/* Debug Banner */}
+        {debugInfo && (
+          <div className={`${cardBg} rounded-xl shadow-sm border p-3 text-sm`}>
+            <span className={textMuted}>{debugInfo}</span>
           </div>
         )}
 
