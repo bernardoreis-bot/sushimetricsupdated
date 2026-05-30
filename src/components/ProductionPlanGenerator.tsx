@@ -117,7 +117,10 @@ function getMonday(date: Date): Date {
 }
 
 function formatDate(date: Date): string {
-  return date.toISOString().split('T')[0];
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
 }
 
 function addDays(date: Date, days: number): Date {
@@ -126,9 +129,22 @@ function addDays(date: Date, days: number): Date {
   return d;
 }
 
-function parseDate(raw: string): Date | null {
-  const s = raw.trim();
+function parseDate(raw: any): Date | null {
+  if (raw === null || raw === undefined) return null;
+  
+  // Handle Excel Serial Numbers (e.g., 46177)
+  if (typeof raw === 'number') {
+    // Excel base date: 30 Dec 1899
+    return new Date((raw - 25569) * 86400 * 1000);
+  }
+  
+  let s = String(raw).trim();
   if (!s) return null;
+
+  // Split off any time component (e.g., "2026-05-25 12:30:00" -> "2026-05-25")
+  s = s.split(/\s+/)[0];
+  
+  // Date string parsing logic
   if (/^\d{4}-\d{2}-\d{2}/.test(s)) {
     const d = new Date(s + 'T00:00:00');
     return isNaN(d.getTime()) ? null : d;
@@ -149,11 +165,10 @@ function parseDate(raw: string): Date | null {
     const d = new Date(yyyy, mm - 1, dd);
     return isNaN(d.getTime()) ? null : d;
   }
-  if (/^\d{4}\d{2}\d{2}$/.test(s)) {
-    const yyyy = Number(s.slice(0, 4));
-    const mm = Number(s.slice(4, 6)) - 1;
-    const dd = Number(s.slice(6, 8));
-    const d = new Date(yyyy, mm, dd);
+  if (/^\d{1,2}-\d{1,2}-\d{2}$/.test(s)) {
+    const [dd, mm, yy] = s.split('-').map(Number);
+    const yyyy = yy > 50 ? 1900 + yy : 2000 + yy;
+    const d = new Date(yyyy, mm - 1, dd);
     return isNaN(d.getTime()) ? null : d;
   }
   const d = new Date(s);
@@ -281,6 +296,28 @@ export default function ProductionPlanGenerator() {
       setParsedInfo({ total: rawJson.length, valid: cleaned.length, excluded, columns: jsonKeys, missingCols });
       setData(cleaned);
       setPlans([]);
+
+      // Auto-detect history date range and set weekStart to the Monday following the max date
+      let minDateObj: Date | null = null;
+      let maxDateObj: Date | null = null;
+      for (const row of cleaned) {
+        const d = parseDate(row.date);
+        if (d) {
+          if (!minDateObj || d < minDateObj) minDateObj = d;
+          if (!maxDateObj || d > maxDateObj) maxDateObj = d;
+        }
+      }
+
+      if (maxDateObj && minDateObj) {
+        const day = maxDateObj.getDay();
+        const daysToNextMonday = day === 0 ? 1 : 8 - day;
+        const nextMonday = addDays(maxDateObj, daysToNextMonday);
+        const nextMondayStr = formatDate(nextMonday);
+        setWeekStart(nextMondayStr);
+        setDebugInfo(`File loaded successfully. Detected history: ${formatDate(minDateObj)} to ${formatDate(maxDateObj)}. Automatically set target Week Start to Monday ${nextMondayStr}. Click "Generate Plan" below!`);
+      } else {
+        setDebugInfo('File loaded, but no valid dates could be parsed. Please check your Date column.');
+      }
     };
     reader.readAsArrayBuffer(file);
   }, []);
