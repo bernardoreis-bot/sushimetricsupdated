@@ -1358,12 +1358,12 @@ export default function ProductionSheetPanel() {
     }
 
     const reducedPriceRanges = [
-      { reducedPrice: 2.50, minOriginal: 2.51, maxOriginal: 3.49, name: '£2.51-£3.49 → £2.50', buffer: 0, baseRate: 0, variability: 0 },
-      { reducedPrice: 3.50, minOriginal: 3.60, maxOriginal: 4.49, name: '£3.60-£4.49 → £3.50', buffer: 0, baseRate: 0, variability: 0 },
-      { reducedPrice: 4.50, minOriginal: 4.70, maxOriginal: 6.90, name: '£4.70-£6.90 → £4.50', buffer: 0, baseRate: 0, variability: 0 },
-      { reducedPrice: 6.00, minOriginal: 7.00, maxOriginal: 9.99, name: '£7.00-£9.99 → £6.00', buffer: 0, baseRate: 0, variability: 0 },
-      { reducedPrice: 7.50, minOriginal: 10.00, maxOriginal: 14.00, name: '£10.00-£14.00 → £7.50', buffer: 0, baseRate: 0, variability: 0 },
-      { reducedPrice: 15.00, minOriginal: 16.00, maxOriginal: Infinity, name: '£16+ → £15.00', buffer: 0, baseRate: 0, variability: 0 }
+      { reducedPrice: 2.50, minOriginal: 2.51, maxOriginal: 3.49, name: '£2.51-£3.49 → £2.50', buffer: 0, baseRate: 0, variability: 0, bandTotalProduction: 0, itemCount: 0 },
+      { reducedPrice: 3.50, minOriginal: 3.60, maxOriginal: 4.49, name: '£3.60-£4.49 → £3.50', buffer: 0, baseRate: 0, variability: 0, bandTotalProduction: 0, itemCount: 0 },
+      { reducedPrice: 4.50, minOriginal: 4.70, maxOriginal: 6.90, name: '£4.70-£6.90 → £4.50', buffer: 0, baseRate: 0, variability: 0, bandTotalProduction: 0, itemCount: 0 },
+      { reducedPrice: 6.00, minOriginal: 7.00, maxOriginal: 9.99, name: '£7.00-£9.99 → £6.00', buffer: 0, baseRate: 0, variability: 0, bandTotalProduction: 0, itemCount: 0 },
+      { reducedPrice: 7.50, minOriginal: 10.00, maxOriginal: 14.00, name: '£10.00-£14.00 → £7.50', buffer: 0, baseRate: 0, variability: 0, bandTotalProduction: 0, itemCount: 0 },
+      { reducedPrice: 15.00, minOriginal: 16.00, maxOriginal: Infinity, name: '£16+ → £15.00', buffer: 0, baseRate: 0, variability: 0, bandTotalProduction: 0, itemCount: 0 }
     ];
 
     const reducedPriceStats = new Map<number, {
@@ -1428,16 +1428,30 @@ export default function ProductionSheetPanel() {
         range.baseRate = baseReductionRate;
         range.variability = finalVariability;
         range.buffer = baseReductionRate + finalVariability;
+        range.bandTotalProduction = stats.totalProduced;
+        range.itemCount = stats.itemCount;
       } else if (range) {
         range.buffer = 20;
         range.baseRate = 15;
         range.variability = 5;
+        range.bandTotalProduction = 0;
+        range.itemCount = 0;
       }
     });
 
-    const getBufferForPrice = (avgPrice: number): number => {
+    const getBufferForPrice = (avgPrice: number, productAvgProd: number): number => {
       const matchingRange = reducedPriceRanges.find(r => avgPrice >= r.minOriginal && avgPrice <= r.maxOriginal);
-      return matchingRange ? matchingRange.buffer : 15;
+      if (!matchingRange) return 15;
+
+      const baseBuffer = matchingRange.buffer;
+      const bandAvgProd = matchingRange.bandTotalProduction > 0 
+        ? matchingRange.bandTotalProduction / (matchingRange.itemCount || 1) 
+        : productAvgProd;
+
+      // Smart Buffer Formula: Dynamic Buffer = 1.0 + ((Base Buffer - 1.0) x Band AvgProd) / Product AvgProd
+      const dynamicBuffer = 1.0 + ((baseBuffer - 1.0) * bandAvgProd) / productAvgProd;
+
+      return Math.max(5, Math.min(50, dynamicBuffer)); // Clamp between 5% and 50%
     };
 
     let totalReduced = 0;
@@ -1458,7 +1472,7 @@ export default function ProductionSheetPanel() {
         const avgPrice = data.prices && data.prices.length > 0
           ? data.prices.reduce((a, b) => a + b, 0) / data.prices.length
           : 0;
-        const itemBuffer = getBufferForPrice(avgPrice);
+        const itemBuffer = getBufferForPrice(avgPrice, avgProduced);
         weightedBufferSum += itemBuffer * avgProduced;
         totalItemsWithBuffer += avgProduced;
       }
@@ -1504,7 +1518,7 @@ export default function ProductionSheetPanel() {
         ? data.prices.reduce((a, b) => a + b, 0) / data.prices.length
         : 0;
 
-      const itemBufferPercent = data.isReduced ? 0 : getBufferForPrice(avgPrice);
+      const itemBufferPercent = data.isReduced ? 0 : getBufferForPrice(avgPrice, avgProduced);
       const bufferMultiplier = 1 + (itemBufferPercent / 100);
 
       const recommendedWithBuffer = Math.ceil(avgSold * bufferMultiplier);
