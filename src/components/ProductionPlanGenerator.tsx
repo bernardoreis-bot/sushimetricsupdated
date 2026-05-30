@@ -1,110 +1,63 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
-import { Upload, Download, Settings, BarChart3, RefreshCw, Sun, Moon } from 'lucide-react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
+import { Upload, Download, Settings, BarChart3, RefreshCw, Sun, Moon, HelpCircle } from 'lucide-react';
 import * as XLSX from 'xlsx';
-
-interface UploadedRow {
-  'Site Name'?: string;
-  'Date'?: string;
-  'Item Name'?: string;
-  'Sales Volume'?: number;
-  'Sales Value'?: number;
-  'Production Quantity'?: number;
-  'Item Type'?: string;
-  'Transaction Type'?: string;
-  'Price Type'?: string;
-  'Department'?: string;
-  'Discount'?: string;
-}
 
 interface CleanedRow {
   site: string;
-  date: string;
-  itemName: string;
-  salesVolume: number;
-  salesValue: number;
-  productionQty: number;
-}
-
-const COLUMN_ALIASES: Record<string, string[]> = {
-  'Site Name': ['site', 'store', 'location', 'site name', 'store name', 'location name', 'outlet'],
-  'Date': ['date', 'day', 'transaction date', 'date time', 'posting date'],
-  'Item Name': ['item', 'product', 'product name', 'item name', 'description', 'item description', 'product description'],
-  'Sales Volume': ['sales volume', 'quantity', 'sales qty', 'volume', 'qty', 'units', 'sold'],
-  'Sales Value': ['sales value', 'value', 'revenue', 'amount', 'total', 'price', 'sales'],
-  'Production Quantity': ['production quantity', 'production', 'prod qty', 'made', 'produced', 'manufactured'],
-  'Item Type': ['item type', 'type', 'category', 'product type', 'item category'],
-  'Transaction Type': ['transaction type', 'trans type', 'tran type', 'trans'],
-  'Price Type': ['price type', 'pricing type', 'price band'],
-  'Discount': ['discount', 'disc', 'discount amount'],
-};
-
-function findColumn(row: Record<string, unknown>, field: string): string | null {
-  const lowerField = field.toLowerCase();
-  const aliases = COLUMN_ALIASES[field] || [lowerField];
-  const keys = Object.keys(row);
-  for (const alias of aliases) {
-    const found = keys.find(k => k.toLowerCase().trim() === alias);
-    if (found) return found;
-  }
-  for (const alias of aliases) {
-    const found = keys.find(k => k.toLowerCase().trim().includes(alias));
-    if (found) return found;
-  }
-  return null;
-}
-
-function getRowValue(row: Record<string, unknown>, field: string): unknown {
-  const col = findColumn(row, field);
-  return col ? row[col] : undefined;
-}
-
-interface ProductInfo {
-  name: string;
-  normalizedName: string;
-  avgDailySales: number;
-  avgDailyProduction: number;
-  productType: 'produced' | 'purchased';
-  historyDays: number;
-  category: string;
-}
-
-interface StorePlan {
-  store: string;
-  products: ProductPlan[];
+  item: string;
+  itemRaw: string;
+  date: Date;
+  sales: number;
+  value: number;
+  prod: number;
 }
 
 interface ProductPlan {
-  name: string;
-  normalizedName: string;
-  productType: 'produced' | 'purchased';
-  avgDailySales: number;
-  avgDailyProduction: number;
-  smartBuffer: number;
-  dailyPlan: { day: string; qty: number }[];
-  weeklyTotal: number;
-  category: string;
-  isExcluded?: boolean;
+  item: string;
+  medPrice: number | null;
+  dynBuf: number;
+  avgSales: number;
+  histDays: number;
+  planQty: Record<string, number>;
+  weekTotal: number;
 }
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+const DAYS_SHORT = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const STORE_COLORS: Record<string, string> = {
+  'Allerton Road': '#4A96A2',
+  'Old Swan Liverpool': '#D48B2E',
+  'Sefton Park': '#8A50C8'
+};
 
-const PRICE_BANDS = [
-  { label: '< £3', max: 3, buffer: 1.35 },
-  { label: '£3 - £5.99', min: 3, max: 5.99, buffer: 1.30 },
-  { label: '£6 - £9.99', min: 6, max: 9.99, buffer: 1.20 },
-  { label: '£10 - £14.99', min: 10, max: 14.99, buffer: 1.10 },
-  { label: '£15+', min: 15, buffer: 1.05 },
-];
+function normaliseName(raw: string): string {
+  return raw
+    .replace(/^T\d+\s+/i, '')   // remove leading "T1 ", "T2 " etc.
+    .replace(/\s+T\d+$/i, '')   // remove trailing " T1" etc.
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
-const EXCLUDE_ITEM_TYPES = ['reduc', 'waste', 'void'];
-const EXCLUDE_TRANSACTION_TYPES = ['reduc', 'void', 'refund'];
-const EXCLUDE_PRICE_TYPES = ['reduc'];
+function isReducedRow(r: any): boolean {
+  const itemName = String(r['Item Name'] || '').trim().toLowerCase();
+  const itemType = String(r['Item Type'] || '').trim().toLowerCase();
+  const tranType = String(r['Transaction Type'] || '').trim().toLowerCase();
+  const priceType = String(r['Price Type'] || '').trim().toLowerCase();
+  const dept = String(r['Department'] || '').trim().toLowerCase();
+  const discount = String(r['Discount'] || '').trim().toLowerCase();
+  return (
+    itemType.includes('reduc') || tranType.includes('reduc') ||
+    priceType.includes('reduc') || itemName.includes('reduc') ||
+    dept.includes('reduc') || discount === 'yes' ||
+    itemType.includes('waste') || itemType.includes('void') ||
+    tranType.includes('void') || tranType.includes('refund')
+  );
+}
 
-function normalizeProductName(name: string): string {
-  let n = name.trim();
-  n = n.replace(/^(T1|T2|T3)[\s_-]+/i, '');
-  n = n.replace(/[\s_-]+(T1|T2|T3)$/i, '');
-  return n;
+function parseNum(v: any): number {
+  if (v === '' || v == null) return 0;
+  const n = parseFloat(String(v).replace(/,/g, ''));
+  return isNaN(n) || n < 0 ? 0 : n;
 }
 
 function getMonday(date: Date): Date {
@@ -129,80 +82,13 @@ function addDays(date: Date, days: number): Date {
   return d;
 }
 
-function parseDate(raw: any): Date | null {
-  if (raw === null || raw === undefined) return null;
-  
-  // Handle Excel Serial Numbers (e.g., 46177)
-  if (typeof raw === 'number') {
-    // Excel base date: 30 Dec 1899
-    return new Date((raw - 25569) * 86400 * 1000);
-  }
-  
-  let s = String(raw).trim();
-  if (!s) return null;
-
-  // Split off any time component (e.g., "2026-05-25 12:30:00" -> "2026-05-25")
-  s = s.split(/\s+/)[0];
-  
-  // Date string parsing logic
-  if (/^\d{4}-\d{2}-\d{2}/.test(s)) {
-    const d = new Date(s + 'T00:00:00');
-    return isNaN(d.getTime()) ? null : d;
-  }
-  if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(s)) {
-    const [dd, mm, yyyy] = s.split('/').map(Number);
-    const d = new Date(yyyy, mm - 1, dd);
-    return isNaN(d.getTime()) ? null : d;
-  }
-  if (/^\d{1,2}-\d{1,2}-\d{4}$/.test(s)) {
-    const [dd, mm, yyyy] = s.split('-').map(Number);
-    const d = new Date(yyyy, mm - 1, dd);
-    return isNaN(d.getTime()) ? null : d;
-  }
-  if (/^\d{1,2}\/\d{1,2}\/\d{2}$/.test(s)) {
-    const [dd, mm, yy] = s.split('/').map(Number);
-    const yyyy = yy > 50 ? 1900 + yy : 2000 + yy;
-    const d = new Date(yyyy, mm - 1, dd);
-    return isNaN(d.getTime()) ? null : d;
-  }
-  if (/^\d{1,2}-\d{1,2}-\d{2}$/.test(s)) {
-    const [dd, mm, yy] = s.split('-').map(Number);
-    const yyyy = yy > 50 ? 1900 + yy : 2000 + yy;
-    const d = new Date(yyyy, mm - 1, dd);
-    return isNaN(d.getTime()) ? null : d;
-  }
-  const d = new Date(s);
-  return isNaN(d.getTime()) ? null : d;
-}
-
-function dateKey(d: Date): string {
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}`;
-}
-
-function getPriceBand(salesValue: number, salesVolume: number, productionQty: number): number {
-  const avgPrice = salesVolume > 0 ? salesValue / salesVolume : (productionQty > 0 ? salesValue / productionQty : 0);
-  for (const band of PRICE_BANDS) {
-    if (band.label === '< £3' && avgPrice < 3) return band.buffer;
-    if (band.max && avgPrice >= (band.min || 0) && avgPrice < band.max) return band.buffer;
-    if (band.label === '£15+' && avgPrice >= 15) return band.buffer;
-  }
-  return 1.30;
-}
-
-function shouldExcludeRow(row: Record<string, unknown>): boolean {
-  const itemType = String(getRowValue(row, 'Item Type') || '').toLowerCase();
-  const transType = String(getRowValue(row, 'Transaction Type') || '').toLowerCase();
-  const priceType = String(getRowValue(row, 'Price Type') || '').toLowerCase();
-  const discount = String(getRowValue(row, 'Discount') || '').toLowerCase();
-
-  if (EXCLUDE_ITEM_TYPES.some(t => itemType.includes(t))) return true;
-  if (EXCLUDE_TRANSACTION_TYPES.some(t => transType.includes(t))) return true;
-  if (EXCLUDE_PRICE_TYPES.some(t => priceType.includes(t))) return true;
-  if (discount === 'yes' || discount === 'y') return true;
-  return false;
+function priceBand(p: number | null): string {
+  if (p === null) return '—';
+  if (p < 3) return '< £3';
+  if (p < 6) return '£3–£5.99';
+  if (p < 10) return '£6–£9.99';
+  if (p < 15) return '£10–£14.99';
+  return '£15+';
 }
 
 export default function ProductionPlanGenerator() {
@@ -218,18 +104,36 @@ export default function ProductionPlanGenerator() {
     return formatDate(d);
   });
   const [historyWeeks, setHistoryWeeks] = useState(8);
-  const [method, setMethod] = useState<'production' | 'sales'>('production');
+  const [method, setMethod] = useState<'prod' | 'sales'>('prod');
   const [minHistoryDays, setMinHistoryDays] = useState(3);
   const [minAvgSales, setMinAvgSales] = useState(0);
-  const [plans, setPlans] = useState<StorePlan[]>([]);
+  const [plans, setPlans] = useState<Record<string, ProductPlan[]>>({});
+  const [activeTab, setActiveTab] = useState<string>('');
+  const [showFormula, setShowFormula] = useState(false);
+
+  const [priceBuffers, setPriceBuffers] = useState({
+    lt3: 1.35,
+    mid1: 1.30,
+    mid2: 1.20,
+    mid3: 1.10,
+    high: 1.05
+  });
+
   const [categories, setCategories] = useState<Record<string, string>>(() => {
     const saved = localStorage.getItem('yoSushi_productCategories_v2');
     return saved ? JSON.parse(saved) : {};
   });
-  const [showParams, setShowParams] = useState(false);
-  const [parsedInfo, setParsedInfo] = useState<{ total: number; valid: number; excluded: number; columns?: string[]; missingCols?: number } | null>(null);
-  const [debugInfo, setDebugInfo] = useState<string | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const [catOrder, setCatOrder] = useState('Sushi, Hot Food, Drinks, Dessert, Snacks, Other, Uncategorised');
+  const [parsedInfo, setParsedInfo] = useState<{
+    total: number;
+    valid: number;
+    reduced: number;
+    merged: number;
+    stores: string[];
+    minDate: Date | null;
+    maxDate: Date | null;
+  } | null>(null);
 
   useEffect(() => {
     localStorage.setItem('ppg_darkMode', JSON.stringify(darkMode));
@@ -239,8 +143,6 @@ export default function ProductionPlanGenerator() {
       document.documentElement.classList.remove('dark');
     }
   }, [darkMode]);
-
-  const allCategories = [...new Set(Object.values(categories).filter(Boolean))].sort();
 
   const saveCategory = useCallback((product: string, cat: string) => {
     setCategories(prev => {
@@ -268,583 +170,758 @@ export default function ProductionPlanGenerator() {
 
     const reader = new FileReader();
     reader.onload = (evt) => {
-      const binary = evt.target?.result;
-      const workbook = XLSX.read(binary, { type: 'array' });
-      const sheet = workbook.Sheets[workbook.SheetNames[0]];
-      const rawJson: Record<string, unknown>[] = XLSX.utils.sheet_to_json(sheet);
-      const jsonKeys = rawJson.length > 0 ? Object.keys(rawJson[0]) : [];
-      console.log('Excel columns found:', jsonKeys);
+      try {
+        const binary = evt.target?.result;
+        const workbook = XLSX.read(binary, { type: 'array', cellDates: true });
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        const rawJson = XLSX.utils.sheet_to_json<any>(sheet, { defval: '' });
 
-      const cleaned: CleanedRow[] = [];
-      let missingCols = 0;
-      for (const row of rawJson) {
-        if (shouldExcludeRow(row)) { continue; }
-        const site = String(getRowValue(row, 'Site Name') || '').trim();
-        const date = String(getRowValue(row, 'Date') || '').trim();
-        const itemName = String(getRowValue(row, 'Item Name') || '').trim();
-        if (!site || !date || !itemName) { missingCols++; continue; }
-        cleaned.push({
-          site,
-          date,
-          itemName,
-          salesVolume: Number(getRowValue(row, 'Sales Volume')) || 0,
-          salesValue: Number(getRowValue(row, 'Sales Value')) || 0,
-          productionQty: Number(getRowValue(row, 'Production Quantity')) || 0,
-        });
-      }
-      const excluded = rawJson.length - cleaned.length - missingCols;
-      setParsedInfo({ total: rawJson.length, valid: cleaned.length, excluded, columns: jsonKeys, missingCols });
-      setData(cleaned);
-      setPlans([]);
+        let reducedCount = 0;
+        let t1MergedCount = 0;
 
-      // Auto-detect history date range and set weekStart to the Monday following the max date
-      let minDateObj: Date | null = null;
-      let maxDateObj: Date | null = null;
-      for (const row of cleaned) {
-        const d = parseDate(row.date);
-        if (d) {
-          if (!minDateObj || d < minDateObj) minDateObj = d;
-          if (!maxDateObj || d > maxDateObj) maxDateObj = d;
+        const cleaned: CleanedRow[] = rawJson
+          .filter(r => {
+            const s = String(r['Site Name'] || '').trim();
+            return s && !s.startsWith('Applied') && !s.startsWith('Delivery') &&
+                   !s.startsWith('Accounting') && s !== 'Total';
+          })
+          .map(r => {
+            let d = r['Date'];
+            if (typeof d === 'number') {
+              d = new Date(Math.round((d - 25569) * 86400 * 1000));
+            } else {
+              d = new Date(d);
+            }
+
+            const reduced = isReducedRow(r);
+            if (reduced) reducedCount++;
+
+            const rawName = String(r['Item Name'] || '').trim();
+            const normName = normaliseName(rawName);
+            if (normName !== rawName) t1MergedCount++;
+
+            return {
+              site: String(r['Site Name'] || '').trim(),
+              item: normName,
+              itemRaw: rawName,
+              date: isNaN(d.getTime()) ? null : d,
+              sales: reduced ? 0 : parseNum(r['Sales Volume']),
+              value: reduced ? 0 : parseNum(r['Sales Value']),
+              prod: reduced ? 0 : parseNum(r['Production Quantity']),
+              reduced
+            };
+          })
+          .filter((r: any) => r.date && r.item && !r.reduced) as CleanedRow[];
+
+        if (cleaned.length === 0) {
+          alert('No valid rows found in the uploaded file. Please check the column headers.');
+          return;
         }
-      }
 
-      if (maxDateObj && minDateObj) {
-        const day = maxDateObj.getDay();
+        const stores = [...new Set(cleaned.map(r => r.site))].filter(Boolean).sort();
+        const minDate = new Date(Math.min(...cleaned.map(r => r.date.getTime())));
+        const maxDate = new Date(Math.max(...cleaned.map(r => r.date.getTime())));
+
+        // Auto-set week start to the Monday following the max date
+        const day = maxDate.getDay();
         const daysToNextMonday = day === 0 ? 1 : 8 - day;
-        const nextMonday = addDays(maxDateObj, daysToNextMonday);
-        const nextMondayStr = formatDate(nextMonday);
-        setWeekStart(nextMondayStr);
-        setDebugInfo(`File loaded successfully. Detected history: ${formatDate(minDateObj)} to ${formatDate(maxDateObj)}. Automatically set target Week Start to Monday ${nextMondayStr}. Click "Generate Plan" below!`);
-      } else {
-        setDebugInfo('File loaded, but no valid dates could be parsed. Please check your Date column.');
+        const nextMonday = addDays(maxDate, daysToNextMonday);
+        setWeekStart(formatDate(nextMonday));
+
+        setParsedInfo({
+          total: rawJson.length,
+          valid: cleaned.length,
+          reduced: reducedCount,
+          merged: t1MergedCount,
+          stores,
+          minDate,
+          maxDate
+        });
+
+        setData(cleaned);
+        setPlans({});
+        setActiveTab('');
+      } catch (err: any) {
+        alert('Could not read file: ' + err.message);
       }
     };
     reader.readAsArrayBuffer(file);
   }, []);
 
+  const getBandKey = (p: number | null): string => {
+    if (p === null) return 'mid1';
+    if (p < 3) return 'lt3';
+    if (p < 6) return 'mid1';
+    if (p < 10) return 'mid2';
+    if (p < 15) return 'mid3';
+    return 'high';
+  };
+
+  const getUserBuf = (bandKey: string): number => {
+    return (priceBuffers as any)[bandKey] || 1.0;
+  };
+
   const generatePlan = useCallback(() => {
     if (data.length === 0) return;
 
-    const startDate = parseDate(weekStart)!;
-    const historyStart = new Date(startDate);
-    historyStart.setDate(historyStart.getDate() - historyWeeks * 7);
+    // History window relative to the maximum date in the file (matching HTML v2.1)
+    const allDates = data.map(r => r.date.getTime());
+    const maxTs = Math.max(...allDates);
+    const cutoff = new Date(maxTs - historyWeeks * 7 * 86400 * 1000);
+    const df = data.filter(r => r.date >= cutoff);
 
-    const rowDates: Map<CleanedRow, Date> = new Map();
-    for (const row of data) {
-      const d = parseDate(row.date);
-      if (d) rowDates.set(row, d);
-    }
-
-    const filtered = data.filter(row => {
-      const rowDate = rowDates.get(row);
-      if (!rowDate) return false;
-      return rowDate >= historyStart && rowDate < startDate;
+    const planStart = new Date(weekStart + 'T00:00:00');
+    const planDates = DAYS.map((_, i) => {
+      const d = new Date(planStart);
+      d.setDate(d.getDate() + i);
+      return d;
     });
 
-    if (filtered.length === 0) {
-      const sampleDates = data.slice(0, 10).map(r => r.date).join(', ');
-      const msg = `No rows in range ${dateKey(historyStart)} to ${dateKey(startDate)}. Sample dates: ${sampleDates}`;
-      console.warn(msg);
-      setDebugInfo(msg);
-      setPlans([]);
-      return;
-    }
+    const stores = [...new Set(df.map(r => r.site))].sort();
+    const storePlans: Record<string, ProductPlan[]> = {};
 
-    setDebugInfo(`Range: ${dateKey(historyStart)} to ${dateKey(startDate)} — ${filtered.length} rows from ${Object.keys(storeGroups).length} stores`);
+    for (const store of stores) {
+      const sdf = df.filter(r => r.site === store);
 
-    const storeGroups: Record<string, CleanedRow[]> = {};
-    for (const row of filtered) {
-      if (!storeGroups[row.site]) storeGroups[row.site] = [];
-      storeGroups[row.site].push(row);
-    }
-
-    const storePlans: StorePlan[] = [];
-
-    for (const [store, rows] of Object.entries(storeGroups)) {
-      const productGroups: Record<string, CleanedRow[]> = {};
-      for (const row of rows) {
-        const key = normalizeProductName(row.itemName);
-        if (!productGroups[key]) productGroups[key] = [];
-        productGroups[key].push(row);
+      // Group by item -> date
+      const itemMap: Record<string, Record<string, { sales: number; value: number; prod: number; date: Date }>> = {};
+      for (const r of sdf) {
+        if (!itemMap[r.item]) itemMap[r.item] = {};
+        const dk = formatDate(r.date);
+        if (!itemMap[r.item][dk]) {
+          itemMap[r.item][dk] = { sales: 0, value: 0, prod: 0, date: r.date };
+        }
+        itemMap[r.item][dk].sales += r.sales;
+        itemMap[r.item][dk].value += r.value;
+        itemMap[r.item][dk].prod += r.prod;
       }
 
-      const products: ProductPlan[] = [];
-      const allDates = [...new Set(rows.map(r => r.date))].sort();
-      const totalDays = allDates.length;
+      // First pass - compute medPrice & avgProd per item
+      const itemMeta: Record<string, {
+        medPrice: number | null;
+        avgSales: number;
+        avgProd: number | null;
+        days: any[];
+        bandKey: string;
+      }> = {};
 
-      for (const [normName, productRows] of Object.entries(productGroups)) {
-        const totalSales = productRows.reduce((s, r) => s + r.salesVolume, 0);
-        const totalSalesValue = productRows.reduce((s, r) => s + r.salesValue, 0);
-        const totalProduction = productRows.reduce((s, r) => s + r.productionQty, 0);
-        const avgDailySales = totalSales / totalDays;
-        const avgDailyProduction = totalProduction / totalDays;
-        const productDays = productRows.length;
+      for (const [item, dateMap] of Object.entries(itemMap)) {
+        const days = Object.values(dateMap);
+        if (days.length < minHistoryDays) continue;
+        const avgSales = days.reduce((s, d) => s + d.sales, 0) / days.length;
+        if (avgSales < minAvgSales) continue;
 
-        const productType: 'produced' | 'purchased' = totalProduction > 0 ? 'produced' : 'purchased';
+        const priced = days.filter(d => d.sales > 0 && d.value > 0).map(d => d.value / d.sales).sort((a, b) => a - b);
+        const medPrice = priced.length ? priced[Math.floor(priced.length / 2)] : null;
 
-        if (productDays < minHistoryDays) continue;
-        if (avgDailySales < minAvgSales) continue;
+        const allProd = days.filter(d => d.prod > 0).map(d => d.prod);
+        const avgProd = allProd.length ? allProd.reduce((a, b) => a + b, 0) / allProd.length : null;
 
-        const userBuffer = getPriceBand(totalSalesValue, totalSales, totalProduction);
+        itemMeta[item] = { medPrice, avgSales, avgProd, days, bandKey: getBandKey(medPrice) };
+      }
 
-        // Group produced products by price band for band-level averaging
-        const producedEntries = Object.entries(productGroups).filter(([, pg]) =>
-          pg.reduce((s, r) => s + r.productionQty, 0) > 0
-        );
-        const bandGroups: Record<string, { totalProd: number; count: number }> = {};
-        for (const [, pg] of producedEntries) {
-          const band = getPriceBand(
-            pg.reduce((s, r) => s + r.salesValue, 0),
-            pg.reduce((s, r) => s + r.salesVolume, 0),
-            pg.reduce((s, r) => s + r.productionQty, 0)
-          );
-          const key = band.toString();
-          if (!bandGroups[key]) bandGroups[key] = { totalProd: 0, count: 0 };
-          bandGroups[key].totalProd += pg.reduce((s, r) => s + r.productionQty, 0) / totalDays;
-          bandGroups[key].count++;
+      // Collect avg production per band
+      const bandProds: Record<string, number[]> = { lt3: [], mid1: [], mid2: [], mid3: [], high: [] };
+      for (const [, meta] of Object.entries(itemMeta)) {
+        if (meta.avgProd !== null) {
+          bandProds[meta.bandKey].push(meta.avgProd);
         }
-        const userBandKey = userBuffer.toString();
-        const bandInfo = bandGroups[userBandKey];
-        const bandAvgProduction = bandInfo ? bandInfo.totalProd / bandInfo.count : avgDailyProduction;
+      }
 
-        let smartBuffer = userBuffer;
-        if (productType === 'produced' && avgDailyProduction > 0) {
-          const bandReducedPerProduct = (userBuffer - 1.0) * bandAvgProduction;
-          smartBuffer = 1.0 + (bandReducedPerProduct / avgDailyProduction);
-          smartBuffer = Math.max(1.0, Math.min(smartBuffer, userBuffer * 1.5));
+      const bandAvgProd: Record<string, number | null> = {};
+      for (const [k, arr] of Object.entries(bandProds)) {
+        bandAvgProd[k] = arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
+      }
+
+      const getSmartBuf = (meta: any): number => {
+        const bk = meta.bandKey;
+        const userBuf = getUserBuf(bk);
+        const bandAvg = bandAvgProd[bk];
+        const productAvg = meta.avgProd;
+
+        if (bandAvg === null || productAvg === null || productAvg === 0) return userBuf;
+
+        const bandReducedPerProduct = (userBuf - 1.0) * bandAvg;
+        const smartBuf = 1.0 + (bandReducedPerProduct / productAvg);
+        return Math.min(Math.max(smartBuf, 1.0), userBuf * 1.5);
+      };
+
+      const results: ProductPlan[] = [];
+
+      for (const [item, meta] of Object.entries(itemMeta)) {
+        const { medPrice, avgSales, days } = meta;
+        const smartBuf = getSmartBuf(meta);
+
+        // Weekday buckets
+        const wdSales: Record<string, number[]> = {};
+        const wdProd: Record<string, number[]> = {};
+
+        for (const d of days) {
+          const dow = DAYS[d.date.getDay() === 0 ? 6 : d.date.getDay() - 1];
+          if (!wdSales[dow]) {
+            wdSales[dow] = [];
+            wdProd[dow] = [];
+          }
+          wdSales[dow].push(d.sales);
+          if (d.prod > 0) wdProd[dow].push(d.prod);
         }
 
-        const weeklyQty = method === 'production' ? avgDailyProduction * 7 : avgDailySales * 7;
-        const bufferedQty = weeklyQty * smartBuffer;
+        const allProd = days.filter(d => d.prod > 0).map(d => d.prod);
+        const overallAvgProd = allProd.length ? allProd.reduce((a, b) => a + b, 0) / allProd.length : null;
 
-        const dailyPlan = DAYS.map((day, idx) => {
-          const targetDate = addDays(startDate, idx);
-          const targetDow = (idx + 1) % 7;
-          const dateStr = dateKey(targetDate);
-          const dayHistory = productRows.filter(r => {
-            const d = parseDate(r.date);
-            return d && d.getDay() === targetDow;
-          });
-          const dayAvg = dayHistory.length > 0
-            ? dayHistory.reduce((s, r) => s + (method === 'production' ? r.productionQty : r.salesVolume), 0) / dayHistory.length
-            : 0;
-          const totalDayAvg = allDates.filter(d => {
-            const dd = parseDate(d);
-            return dd && dd.getDay() === targetDow;
-          }).length;
+        const planQty: Record<string, number> = {};
+        for (const day of DAYS) {
+          let qty = 0;
+          if (method === 'prod') {
+            if (wdProd[day] && wdProd[day].length > 0) {
+              qty = (wdProd[day].reduce((a, b) => a + b, 0) / wdProd[day].length) * smartBuf;
+            } else if (overallAvgProd !== null) {
+              qty = overallAvgProd * smartBuf;
+            } else {
+              const base = wdSales[day] ? wdSales[day].reduce((a, b) => a + b, 0) / wdSales[day].length : avgSales;
+              qty = base * smartBuf;
+            }
+          } else {
+            const base = wdSales[day] ? wdSales[day].reduce((a, b) => a + b, 0) / wdSales[day].length : avgSales;
+            qty = base * smartBuf;
+          }
+          qty = Math.max(qty, 0);
+          planQty[day] = Math.ceil(qty);
+        }
 
-          const weight = totalDayAvg > 0 ? (dayHistory.length / totalDayAvg) : (1 / 7);
-          return { day: dayStr(dateStr, day), qty: Math.round(bufferedQty * weight) };
-        });
-
-        products.push({
-          name: productRows[0].itemName,
-          normalizedName: normName,
-          productType,
-          avgDailySales,
-          avgDailyProduction,
-          smartBuffer,
-          dailyPlan,
-          weeklyTotal: dailyPlan.reduce((s, d) => s + d.qty, 0),
-          category: categories[normName] || '',
+        const weekTotal = DAYS.reduce((s, d) => s + planQty[d], 0);
+        results.push({
+          item,
+          medPrice,
+          dynBuf: Math.round(smartBuf * 100) / 100,
+          avgSales,
+          histDays: days.length,
+          planQty,
+          weekTotal
         });
       }
 
-      products.sort((a, b) => {
-        if (a.productType !== b.productType) return a.productType === 'produced' ? -1 : 1;
-        return a.normalizedName.localeCompare(b.normalizedName);
-      });
-
-      storePlans.push({ store, products });
+      storePlans[store] = results.sort((a, b) => b.avgSales - a.avgSales);
     }
 
     setPlans(storePlans);
-  }, [data, weekStart, historyWeeks, method, minHistoryDays, minAvgSales, categories]);
+    if (stores.length > 0) {
+      setActiveTab(stores[0]);
+    }
+  }, [data, historyWeeks, weekStart, method, minHistoryDays, minAvgSales, priceBuffers]);
 
-  const exportToExcel = useCallback(() => {
-    if (plans.length === 0) return;
-
+  const downloadExcel = useCallback(() => {
+    if (Object.keys(plans).length === 0) return;
     const wb = XLSX.utils.book_new();
 
-    for (const plan of plans) {
-      const header = ['Product Name', 'Type', 'Category', 'Avg Daily Sales', 'Avg Daily Production', 'Buffer',
-        ...DAYS, 'Weekly Total'];
-      const rows = plan.products.map(p => [
-        p.normalizedName,
-        p.productType === 'produced' ? 'Produced' : 'Purchased',
-        p.category,
-        Math.round(p.avgDailySales * 100) / 100,
-        Math.round(p.avgDailyProduction * 100) / 100,
-        Math.round(p.smartBuffer * 100) / 100,
-        ...p.dailyPlan.map(d => d.qty),
-        p.weeklyTotal,
+    for (const [store, plan] of Object.entries(plans)) {
+      const planDates = DAYS.map((_, i) => {
+        const d = new Date(weekStart + 'T00:00:00');
+        d.setDate(d.getDate() + i);
+        return d;
+      });
+
+      const headers = [
+        '#', 'Product', 'Price Band', 'Unit Price', 'Avg Daily Sales', 'History Days',
+        ...DAYS.map((d, i) => DAYS_SHORT[i] + ' ' + planDates[i].getDate() + '/' + String(planDates[i].getMonth() + 1).padStart(2, '0')),
+        'WEEK TOTAL'
+      ];
+
+      const rows = plan.map((row, ri) => [
+        ri + 1, row.item, priceBand(row.medPrice),
+        row.medPrice ? '£' + row.medPrice.toFixed(2) : '—',
+        row.avgSales.toFixed(2), row.histDays,
+        ...DAYS.map(d => row.planQty[d]),
+        row.weekTotal
       ]);
 
-      const wsData = [header, ...rows];
-      const ws = XLSX.utils.aoa_to_sheet(wsData);
+      const dayTotals = DAYS.map(d => plan.reduce((s, r) => s + r.planQty[d], 0));
+      rows.push(['', 'DAILY TOTAL', '', '', '', '', ...dayTotals, dayTotals.reduce((a, b) => a + b, 0)]);
 
-      const colWidths = header.map((h, i) => {
-        const maxLen = Math.max(
-          h.length,
-          ...rows.map(r => String(r[i]).length)
-        );
-        return { wch: maxLen + 3 };
-      });
-      ws['!cols'] = colWidths;
-
-      XLSX.utils.book_append_sheet(wb, ws, plan.store.slice(0, 31));
+      const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+      ws['!cols'] = [5, 44, 13, 11, 14, 12, ...Array(7).fill(10), 12].map(w => ({ wch: w }));
+      XLSX.utils.book_append_sheet(wb, ws, store.slice(0, 31));
     }
 
-    XLSX.writeFile(wb, `ProductionPlan_${weekStart}.xlsx`);
+    const dateStr = weekStart.replace(/-/g, '');
+    XLSX.writeFile(wb, `production_plan_${dateStr}.xlsx`);
   }, [plans, weekStart]);
 
-  const totalProducts = plans.reduce((s, p) => s + p.products.length, 0);
-  const totalWeeklyUnits = plans.reduce((s, p) => s + p.products.reduce((s2, pr) => s2 + pr.weeklyTotal, 0), 0);
-  const totalProduced = plans.reduce((s, p) => s + p.products.filter(pr => pr.productType === 'produced').length, 0);
-  const totalPurchased = plans.reduce((s, p) => s + p.products.filter(pr => pr.productType === 'purchased').length, 0);
-  const dailyTotals = DAYS.map((_, idx) =>
-    plans.reduce((s, p) => s + p.products.reduce((s2, pr) => s2 + (pr.dailyPlan[idx]?.qty || 0), 0), 0)
-  );
+  const getCat = (product: string) => categories[product] || 'Uncategorised';
+
+  const getCatOrderList = () => {
+    return catOrder.split(',').map(s => s.trim()).filter(Boolean);
+  };
+
+  const groupByCategory = (plan: ProductPlan[]) => {
+    const order = getCatOrderList();
+    const groups: Record<string, ProductPlan[]> = {};
+    plan.forEach(r => {
+      const cat = getCat(r.item);
+      if (!groups[cat]) groups[cat] = [];
+      groups[cat].push(r);
+    });
+
+    const result: [string, ProductPlan[]][] = [];
+    order.forEach(cat => {
+      if (groups[cat]) {
+        result.push([cat, groups[cat]]);
+        delete groups[cat];
+      }
+    });
+
+    Object.keys(groups).sort().forEach(cat => {
+      result.push([cat, groups[cat]]);
+    });
+
+    return result;
+  };
+
+  const allCategoryNames = () => {
+    const stored = Object.values(categories);
+    const ordered = getCatOrderList();
+    return [...new Set([...ordered, ...stored, 'Uncategorised'])].filter(Boolean);
+  };
+
+  const activePlan = plans[activeTab] || [];
+  const activeColor = STORE_COLORS[activeTab] || '#1a6870';
+  const dayTotals = DAYS.map(d => activePlan.reduce((s, r) => s + (r.planQty[d] || 0), 0));
+  const grandTotal = dayTotals.reduce((a, b) => a + b, 0);
 
   const bgClass = darkMode ? 'bg-gray-900 text-gray-100' : 'bg-gray-50 text-gray-900';
   const cardBg = darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200';
   const textMuted = darkMode ? 'text-gray-400' : 'text-gray-500';
   const inputBg = darkMode ? 'bg-gray-700 border-gray-600 text-gray-100' : 'bg-white border-gray-300 text-gray-900';
+  const borderClass = darkMode ? 'border-gray-700' : 'border-gray-200';
 
   return (
-    <div className={`min-h-screen ${bgClass} transition-colors`}>
-      <div className="max-w-7xl mx-auto p-4 md:p-6 space-y-6">
-        {/* Header */}
-        <div className={`${cardBg} rounded-xl shadow-sm border p-4 md:p-6`}>
-          <div className="flex items-center justify-between">
+    <div className={`min-h-screen ${bgClass} transition-colors pb-12`}>
+      {/* Header */}
+      <div className={`border-b ${borderClass} ${cardBg} px-6 py-4 sticky top-0 z-50 shadow-sm`}>
+        <div className="max-w-7xl mx-auto flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <span className="text-2xl">🍣</span>
             <div>
-              <h1 className="text-2xl font-bold">Production Plan Generator</h1>
-              <p className={textMuted}>Upload POS data to generate a 7-day production plan</p>
+              <h1 className="text-xl font-bold tracking-tight">Production Plan Generator</h1>
+              <p className={`text-xs ${textMuted}`}>Upload POS data to generate a 7-day production plan</p>
             </div>
+          </div>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setShowFormula(!showFormula)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                showFormula
+                  ? 'bg-teal-600 text-white'
+                  : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600'
+              }`}
+            >
+              <Settings className="w-3.5 h-3.5" />
+              Formula Settings
+            </button>
             <button
               onClick={() => setDarkMode(!darkMode)}
               className={`p-2 rounded-lg transition-colors ${darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`}
             >
-              {darkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+              {darkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
             </button>
           </div>
         </div>
+      </div>
 
-        {/* Upload */}
-        <div className={`${cardBg} rounded-xl shadow-sm border p-4 md:p-6`}>
-          <div className="flex items-center gap-4 flex-wrap">
-            <div
-              onClick={() => fileInputRef.current?.click()}
-              className={`flex items-center gap-3 px-6 py-3 rounded-lg cursor-pointer transition-colors ${darkMode ? 'bg-blue-600 hover:bg-blue-700 text-white' : 'bg-blue-500 hover:bg-blue-600 text-white'}`}
-            >
-              <Upload className="w-5 h-5" />
-              <span className="font-medium">Upload POS Export (.xlsx)</span>
+      <div className="max-w-7xl mx-auto px-4 md:px-6 mt-6 space-y-6">
+        {/* Formula Settings Panel */}
+        {showFormula && (
+          <div className={`${cardBg} rounded-xl border p-5 shadow-md space-y-4 animate-in fade-in slide-in-from-top-2 duration-200`}>
+            <div className="flex items-center justify-between border-b pb-3">
+              <h3 className="font-bold text-teal-600 dark:text-teal-400 flex items-center gap-2">
+                <HelpCircle className="w-4 h-4" /> Formula &amp; Buffer Settings
+              </h3>
+              <button onClick={() => setShowFormula(false)} className={`text-xs ${textMuted} hover:underline`}>Close</button>
             </div>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".xlsx,.xls"
-              onChange={handleFileUpload}
-              className="hidden"
-            />
-            {fileName && (
-              <span className={`text-sm ${textMuted}`}>{fileName}</span>
-            )}
-            {parsedInfo && (
-              <span className="text-sm flex flex-wrap gap-x-3 gap-y-1 items-center">
-                <span className={parsedInfo.valid > 0 ? 'text-green-600 font-medium' : 'text-red-600 font-medium'}>
-                  {parsedInfo.valid} rows loaded
-                </span>
-                {parsedInfo.excluded > 0 && (
-                  <span className="text-amber-600">{parsedInfo.excluded} excluded</span>
-                )}
-                {parsedInfo.missingCols && parsedInfo.missingCols > 0 ? (
-                  <span className="text-red-600">{parsedInfo.missingCols} rows missing Site/Date/Item</span>
-                ) : null}
-                {parsedInfo.columns && parsedInfo.columns.length > 0 && (
-                  <span className="text-gray-400 text-xs" title={parsedInfo.columns.join(', ')}>
-                    Cols: {parsedInfo.columns.join(', ')}
-                  </span>
-                )}
-              </span>
-            )}
-            <button
-              onClick={() => setShowParams(!showParams)}
-              className={`flex items-center gap-2 px-4 py-3 rounded-lg transition-colors ${darkMode ? 'hover:bg-gray-700 text-gray-300' : 'hover:bg-gray-100 text-gray-600'}`}
-            >
-              <Settings className="w-4 h-4" />
-              Parameters
-            </button>
-          </div>
-        </div>
-
-        {/* Parameters Panel */}
-        {showParams && (
-          <div className={`${cardBg} rounded-xl shadow-sm border p-4 md:p-6 space-y-4`}>
-            <h2 className="font-semibold text-lg flex items-center gap-2">
-              <Settings className="w-4 h-4" /> Parameters
-            </h2>
-            <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4">
-              <div>
-                <label className={`block text-sm font-medium mb-1 ${textMuted}`}>Week Start (Monday)</label>
-                <input
-                  type="date"
-                  value={weekStart}
-                  onChange={e => setWeekStart(e.target.value)}
-                  className={`w-full rounded-lg border px-3 py-2 text-sm ${inputBg}`}
-                />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-xs leading-relaxed">
+              <div className="space-y-2">
+                <p><strong>Name normalisation:</strong> T1/T2/T3 tier prefixes &amp; suffixes stripped — "T1 Salmon Nigiri" and "Salmon Nigiri" are merged into one product before any calculation.</p>
+                <p><strong>Pre-filter:</strong> Reduced, voided &amp; refund rows excluded — these are already-produced items, not new demand.</p>
+                <p><strong>Primary:</strong> Weekday historical production qty (full-price rows only).</p>
+                <p><strong>Fallback 1:</strong> Overall avg production qty.</p>
+                <p><strong>Buffer formula (2-layer):</strong></p>
+                <ol className="list-decimal pl-4 space-y-1">
+                  <li><em>Band reduced units per product</em> = (your buffer − 1) × avg production in that price band ÷ number of products in band</li>
+                  <li><em>Product buffer</em> = 1 + (band reduced per product ÷ <strong>this product's own avg production</strong>)</li>
+                </ol>
+                <p className="italic">Result: low-volume products get proportionally the same extra units as high-volume ones — never over or under-stocked relative to their own scale.</p>
               </div>
-              <div>
-                <label className={`block text-sm font-medium mb-1 ${textMuted}`}>History Weeks</label>
-                <input
-                  type="number"
-                  value={historyWeeks}
-                  onChange={e => setHistoryWeeks(Math.max(1, Number(e.target.value)))}
-                  className={`w-full rounded-lg border px-3 py-2 text-sm ${inputBg}`}
-                  min={1}
-                />
-              </div>
-              <div>
-                <label className={`block text-sm font-medium mb-1 ${textMuted}`}>Method</label>
-                <select
-                  value={method}
-                  onChange={e => setMethod(e.target.value as 'production' | 'sales')}
-                  className={`w-full rounded-lg border px-3 py-2 text-sm ${inputBg}`}
-                >
-                  <option value="production">Production Qty</option>
-                  <option value="sales">Sales</option>
-                </select>
-              </div>
-              <div>
-                <label className={`block text-sm font-medium mb-1 ${textMuted}`}>Min History Days</label>
-                <input
-                  type="number"
-                  value={minHistoryDays}
-                  onChange={e => setMinHistoryDays(Math.max(1, Number(e.target.value)))}
-                  className={`w-full rounded-lg border px-3 py-2 text-sm ${inputBg}`}
-                  min={1}
-                />
-              </div>
-              <div>
-                <label className={`block text-sm font-medium mb-1 ${textMuted}`}>Min Avg Sales</label>
-                <input
-                  type="number"
-                  value={minAvgSales}
-                  onChange={e => setMinAvgSales(Math.max(0, Number(e.target.value)))}
-                  className={`w-full rounded-lg border px-3 py-2 text-sm ${inputBg}`}
-                  min={0}
-                  step={0.1}
-                />
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Price Band Buffers */}
-        <div className={`${cardBg} rounded-xl shadow-sm border p-4 md:p-6`}>
-          <h2 className="font-semibold text-lg mb-3">Price Band Buffers</h2>
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-            {PRICE_BANDS.map(band => (
-              <div key={band.label} className={`p-3 rounded-lg text-center text-sm ${darkMode ? 'bg-gray-700' : 'bg-gray-50'}`}>
-                <div className={textMuted}>{band.label}</div>
-                <div className="font-bold text-lg">{band.buffer}x</div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* KPI Dashboard */}
-        {plans.length > 0 && (
-          <div className={`${cardBg} rounded-xl shadow-sm border p-4 md:p-6`}>
-            <div className="flex items-center gap-2 mb-4">
-              <BarChart3 className="w-5 h-5 text-blue-500" />
-              <h2 className="font-semibold text-lg">KPI Dashboard</h2>
-            </div>
-            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3">
-              <div className={`p-3 rounded-lg text-center ${darkMode ? 'bg-gray-700' : 'bg-blue-50'}`}>
-                <div className="text-xs text-gray-500">Products</div>
-                <div className="font-bold text-xl">{totalProducts}</div>
-              </div>
-              <div className={`p-3 rounded-lg text-center ${darkMode ? 'bg-gray-700' : 'bg-green-50'}`}>
-                <div className="text-xs text-gray-500">Units/Week</div>
-                <div className="font-bold text-xl">{totalWeeklyUnits}</div>
-              </div>
-              <div className={`p-3 rounded-lg text-center ${darkMode ? 'bg-gray-700' : 'bg-purple-50'}`}>
-                <div className="text-xs text-gray-500">Avg/Day</div>
-                <div className="font-bold text-xl">{Math.round(totalWeeklyUnits / 7)}</div>
-              </div>
-              <div className="p-3 rounded-lg text-center bg-teal-50">
-                <div className="text-xs text-gray-500">Produced</div>
-                <div className="font-bold text-xl text-teal-600">{totalProduced}</div>
-              </div>
-              <div className="p-3 rounded-lg text-center bg-orange-50">
-                <div className="text-xs text-gray-500">Purchased</div>
-                <div className="font-bold text-xl text-orange-600">{totalPurchased}</div>
-              </div>
-              {dailyTotals.map((total, idx) => (
-                <div key={DAYS[idx]} className={`p-3 rounded-lg text-center ${darkMode ? 'bg-gray-700' : 'bg-gray-50'}`}>
-                  <div className="text-xs text-gray-500">{DAYS[idx].slice(0, 3)}</div>
-                  <div className="font-bold text-lg">{total}</div>
+              <div className="space-y-4">
+                <div className="font-bold text-teal-600 dark:text-teal-400">Price-range buffers (fallback multiplier)</div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className={`block text-[10px] font-semibold uppercase ${textMuted} mb-1`}>&lt; £3</label>
+                    <input
+                      type="number"
+                      step="0.05"
+                      value={priceBuffers.lt3}
+                      onChange={e => setPriceBuffers({ ...priceBuffers, lt3: parseFloat(e.target.value) || 1.0 })}
+                      className={`w-full rounded-lg border px-3 py-1.5 text-xs ${inputBg}`}
+                    />
+                  </div>
+                  <div>
+                    <label className={`block text-[10px] font-semibold uppercase ${textMuted} mb-1`}>£3 – £5.99</label>
+                    <input
+                      type="number"
+                      step="0.05"
+                      value={priceBuffers.mid1}
+                      onChange={e => setPriceBuffers({ ...priceBuffers, mid1: parseFloat(e.target.value) || 1.0 })}
+                      className={`w-full rounded-lg border px-3 py-1.5 text-xs ${inputBg}`}
+                    />
+                  </div>
+                  <div>
+                    <label className={`block text-[10px] font-semibold uppercase ${textMuted} mb-1`}>£6 – £9.99</label>
+                    <input
+                      type="number"
+                      step="0.05"
+                      value={priceBuffers.mid2}
+                      onChange={e => setPriceBuffers({ ...priceBuffers, mid2: parseFloat(e.target.value) || 1.0 })}
+                      className={`w-full rounded-lg border px-3 py-1.5 text-xs ${inputBg}`}
+                    />
+                  </div>
+                  <div>
+                    <label className={`block text-[10px] font-semibold uppercase ${textMuted} mb-1`}>£10 – £14.99</label>
+                    <input
+                      type="number"
+                      step="0.05"
+                      value={priceBuffers.mid3}
+                      onChange={e => setPriceBuffers({ ...priceBuffers, mid3: parseFloat(e.target.value) || 1.0 })}
+                      className={`w-full rounded-lg border px-3 py-1.5 text-xs ${inputBg}`}
+                    />
+                  </div>
+                  <div className="col-span-2">
+                    <label className={`block text-[10px] font-semibold uppercase ${textMuted} mb-1`}>£15+</label>
+                    <input
+                      type="number"
+                      step="0.05"
+                      value={priceBuffers.high}
+                      onChange={e => setPriceBuffers({ ...priceBuffers, high: parseFloat(e.target.value) || 1.0 })}
+                      className={`w-full rounded-lg border px-3 py-1.5 text-xs ${inputBg}`}
+                    />
+                  </div>
                 </div>
-              ))}
+              </div>
             </div>
           </div>
         )}
 
-        {/* Debug Banner */}
-        {debugInfo && (
-          <div className={`${cardBg} rounded-xl shadow-sm border p-3 text-sm`}>
-            <span className={textMuted}>{debugInfo}</span>
-          </div>
-        )}
-
-        {/* Generate / Export Buttons */}
-        {data.length > 0 && (
-          <div className="flex gap-3">
-            <button
-              onClick={generatePlan}
-              className="flex items-center gap-2 px-6 py-3 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition-colors font-medium"
-            >
-              <RefreshCw className="w-4 h-4" />
-              Generate Plan
-            </button>
-            {plans.length > 0 && (
-              <button
-                onClick={exportToExcel}
-                className="flex items-center gap-2 px-6 py-3 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors font-medium"
+        {/* Parameters */}
+        <div className={`${cardBg} rounded-xl border p-5 shadow-sm space-y-4`}>
+          <h2 className="text-xs font-bold uppercase tracking-wider text-teal-600 dark:text-teal-400">⚙️ Parameters</h2>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+            <div>
+              <label className={`block text-[10px] font-semibold uppercase ${textMuted} mb-1`}>Plan Week Start (Monday)</label>
+              <input
+                type="date"
+                value={weekStart}
+                onChange={e => setWeekStart(e.target.value)}
+                className={`w-full rounded-lg border px-3 py-2 text-sm ${inputBg}`}
+              />
+              <span className={`text-[10px] ${textMuted} mt-1 block`}>Must be a Monday</span>
+            </div>
+            <div>
+              <label className={`block text-[10px] font-semibold uppercase ${textMuted} mb-1`}>History Weeks</label>
+              <input
+                type="number"
+                value={historyWeeks}
+                onChange={e => setHistoryWeeks(Math.max(1, parseInt(e.target.value) || 1))}
+                className={`w-full rounded-lg border px-3 py-2 text-sm ${inputBg}`}
+                min={1}
+                max={52}
+              />
+              <span className={`text-[10px] ${textMuted} mt-1 block`}>Weeks of history to learn from</span>
+            </div>
+            <div>
+              <label className={`block text-[10px] font-semibold uppercase ${textMuted} mb-1`}>Method</label>
+              <select
+                value={method}
+                onChange={e => setMethod(e.target.value as 'prod' | 'sales')}
+                className={`w-full rounded-lg border px-3 py-2 text-sm ${inputBg}`}
               >
-                <Download className="w-4 h-4" />
-                Export Excel
-              </button>
-            )}
+                <option value="prod">Production Qty history</option>
+                <option value="sales">Sales × Buffer multiplier</option>
+              </select>
+              <span className={`text-[10px] ${textMuted} mt-1 block`}>Primary data source for plan</span>
+            </div>
+            <div>
+              <label className={`block text-[10px] font-semibold uppercase ${textMuted} mb-1`}>Min History Days</label>
+              <input
+                type="number"
+                value={minHistoryDays}
+                onChange={e => setMinHistoryDays(Math.max(1, parseInt(e.target.value) || 1))}
+                className={`w-full rounded-lg border px-3 py-2 text-sm ${inputBg}`}
+                min={1}
+              />
+              <span className={`text-[10px] ${textMuted} mt-1 block`}>Skip products with fewer data points</span>
+            </div>
+            <div>
+              <label className={`block text-[10px] font-semibold uppercase ${textMuted} mb-1`}>Min Avg Daily Sales</label>
+              <input
+                type="number"
+                value={minAvgSales}
+                onChange={e => setMinAvgSales(Math.max(0, parseFloat(e.target.value) || 0))}
+                className={`w-full rounded-lg border px-3 py-2 text-sm ${inputBg}`}
+                min={0}
+                step={0.1}
+              />
+              <span className={`text-[10px] ${textMuted} mt-1 block`}>0 = include all products</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Upload Zone */}
+        <div
+          onClick={() => fileInputRef.current?.click()}
+          className={`border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-all ${cardBg} ${
+            fileName ? 'border-teal-500 bg-teal-50/5 dark:bg-teal-950/5' : 'border-gray-300 dark:border-gray-700 hover:border-teal-500'
+          }`}
+        >
+          <div className="text-3xl mb-2">📂</div>
+          <p className="text-sm font-semibold">
+            {fileName ? <span className="text-teal-600 dark:text-teal-400">{fileName}</span> : 'Click to upload or drag & drop your Excel export'}
+          </p>
+          <p className={`text-xs mt-1 ${textMuted}`}>Supports .xlsx files exported from your POS system</p>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".xlsx,.xls"
+            onChange={handleFileUpload}
+            className="hidden"
+          />
+        </div>
+
+        {/* Status Banner */}
+        {parsedInfo && (
+          <div className="bg-teal-50 dark:bg-teal-950/30 border border-teal-200 dark:border-teal-900 rounded-xl p-4 text-xs space-y-1">
+            <div className="font-bold text-teal-800 dark:text-teal-300">✅ File Loaded Successfully</div>
+            <div className="text-teal-700 dark:text-teal-400 flex flex-wrap gap-x-4 gap-y-1">
+              <span>• <strong>{parsedInfo.valid.toLocaleString()}</strong> valid rows loaded</span>
+              {parsedInfo.reduced > 0 && <span className="text-amber-600 dark:text-amber-400">• <strong>{parsedInfo.reduced.toLocaleString()}</strong> reduced/void rows excluded</span>}
+              {parsedInfo.merged > 0 && <span className="text-teal-600 dark:text-teal-400">• <strong>{parsedInfo.merged.toLocaleString()}</strong> T1/T2 rows merged</span>}
+              <span>• <strong>{parsedInfo.stores.length}</strong> stores detected</span>
+              {parsedInfo.minDate && parsedInfo.maxDate && (
+                <span>• History: <strong>{parsedInfo.minDate.toLocaleDateString('en-GB')}</strong> → <strong>{parsedInfo.maxDate.toLocaleDateString('en-GB')}</strong></span>
+              )}
+            </div>
+            <div className="text-teal-600 dark:text-teal-500 mt-1 font-medium">
+              👉 Target Week Start automatically set to Monday <strong>{weekStart}</strong>. Click \"Generate Production Plan\" below!
+            </div>
           </div>
         )}
 
-        {/* Plans */}
-        {plans.map(plan => (
-          <div key={plan.store} className={`${cardBg} rounded-xl shadow-sm border overflow-hidden`}>
-            <div className={`px-4 md:px-6 py-4 border-b ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}>
-              <h2 className="text-lg font-bold">{plan.store}</h2>
+        {/* Action Buttons */}
+        <div className="flex gap-3 flex-wrap">
+          <button
+            onClick={generatePlan}
+            disabled={data.length === 0}
+            className="flex items-center gap-2 px-6 py-3 bg-teal-600 hover:bg-teal-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg transition-colors font-semibold text-sm shadow-sm"
+          >
+            <RefreshCw className="w-4 h-4" />
+            Generate Production Plan
+          </button>
+          {Object.keys(plans).length > 0 && (
+            <button
+              onClick={downloadExcel}
+              className="flex items-center gap-2 px-6 py-3 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-800 dark:text-gray-200 rounded-lg transition-colors font-semibold text-sm border border-gray-300 dark:border-gray-700 shadow-sm"
+            >
+              <Download className="w-4 h-4" />
+              Download Excel
+            </button>
+          )}
+        </div>
+
+        {/* Category Order Controls */}
+        {Object.keys(plans).length > 0 && (
+          <div className={`${cardBg} rounded-xl border p-4 shadow-sm space-y-3`}>
+            <div className="font-bold text-xs uppercase tracking-wider text-teal-600 dark:text-teal-400">📂 Category Order</div>
+            <div className="flex gap-3 items-end flex-wrap">
+              <div className="flex-1 min-width-[240px]">
+                <label className={`block text-[10px] font-semibold uppercase ${textMuted} mb-1`}>Display order (comma separated)</label>
+                <input
+                  type="text"
+                  value={catOrder}
+                  onChange={e => setCatOrder(e.target.value)}
+                  className={`w-full rounded-lg border px-3 py-2 text-xs ${inputBg}`}
+                />
+              </div>
+            </div>
+            <p className={`text-[10px] ${textMuted}`}>Category assignments are saved in your browser — same product names will remember their category next time.</p>
+          </div>
+        )}
+
+        {/* Results Tabs & Tables */}
+        {Object.keys(plans).length > 0 ? (
+          <div className="space-y-4">
+            {/* Tabs */}
+            <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700 overflow-x-auto">
+              {Object.keys(plans).map(store => {
+                const plan = plans[store];
+                const totalUnits = plan.reduce((s, r) => s + r.weekTotal, 0);
+                const isActive = activeTab === store;
+                const activeBorderColor = STORE_COLORS[store] || '#1a6870';
+
+                return (
+                  <button
+                    key={store}
+                    onClick={() => setActiveTab(store)}
+                    style={{ borderTopColor: isActive ? activeBorderColor : 'transparent' }}
+                    className={`px-5 py-3 text-xs font-bold border-t-2 border-x border-b transition-all whitespace-nowrap rounded-t-lg ${
+                      isActive
+                        ? 'bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 border-x-gray-200 dark:border-x-gray-700 border-b-white dark:border-b-gray-800'
+                        : 'bg-gray-50 dark:bg-gray-900/50 text-gray-500 dark:text-gray-400 border-transparent border-b-gray-200 dark:border-b-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800/30'
+                    }`}
+                  >
+                    {store} <span className="opacity-60 font-normal">({plan.length} products · {totalUnits.toLocaleString()} units)</span>
+                  </button>
+                );
+              })}
             </div>
 
-            {/* Production Plan - Produced Items */}
-            {plan.products.filter(p => p.productType === 'produced').length > 0 && (
-              <div className="border-b border-gray-200">
-                <div className="px-4 md:px-6 py-3 bg-teal-50 flex items-center gap-2">
-                  <div className="w-3 h-3 rounded-full bg-teal-500" />
-                  <span className="font-semibold text-teal-700">Production Plan</span>
+            {/* Active Store Panel */}
+            {activeTab && plans[activeTab] && (
+              <div className={`${cardBg} rounded-b-xl border border-t-0 shadow-sm overflow-hidden`}>
+                {/* KPI Bar */}
+                <div className="flex flex-wrap gap-6 p-5 bg-gray-50 dark:bg-gray-900/30 border-b border-gray-200 dark:border-gray-700">
+                  <div className="flex flex-col">
+                    <span className="text-2xl font-bold" style={{ color: activeColor }}>{activePlan.length}</span>
+                    <span className={`text-[10px] font-bold uppercase tracking-wider ${textMuted}`}>Products</span>
+                  </div>
+                  <div className="w-px bg-gray-200 dark:bg-gray-700 self-stretch"></div>
+                  <div className="flex flex-col">
+                    <span className="text-2xl font-bold" style={{ color: activeColor }}>{grandTotal.toLocaleString()}</span>
+                    <span className={`text-[10px] font-bold uppercase tracking-wider ${textMuted}`}>Units / Week</span>
+                  </div>
+                  <div className="w-px bg-gray-200 dark:bg-gray-700 self-stretch"></div>
+                  <div className="flex flex-col">
+                    <span className="text-2xl font-bold" style={{ color: activeColor }}>{Math.round(grandTotal / 7).toLocaleString()}</span>
+                    <span className={`text-[10px] font-bold uppercase tracking-wider ${textMuted}`}>Avg / Day</span>
+                  </div>
+                  <div className="w-px bg-gray-200 dark:bg-gray-700 self-stretch"></div>
+                  {DAYS.map((d, i) => (
+                    <div key={d} className="flex flex-col">
+                      <span className="text-lg font-bold" style={{ color: activeColor }}>{dayTotals[i].toLocaleString()}</span>
+                      <span className={`text-[10px] font-bold uppercase tracking-wider ${textMuted}`}>{DAYS_SHORT[i]}</span>
+                    </div>
+                  ))}
                 </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className={`${darkMode ? 'bg-gray-700' : 'bg-gray-50'}`}>
-                        <th className="text-left px-4 py-2 font-medium">Product</th>
-                        <th className="text-left px-4 py-2 font-medium">Category</th>
-                        <th className="text-right px-4 py-2 font-medium">Avg/Day</th>
-                        <th className="text-right px-4 py-2 font-medium">Buffer</th>
-                        {DAYS.map(d => <th key={d} className="text-right px-2 py-2 font-medium text-xs">{d.slice(0, 3)}</th>)}
-                        <th className="text-right px-4 py-2 font-medium">Total</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {plan.products.filter(p => p.productType === 'produced').map((p, idx) => (
-                        <tr key={p.normalizedName} className={`border-t ${darkMode ? 'border-gray-700' : 'border-gray-100'} ${idx % 2 === 0 ? (darkMode ? 'bg-gray-800/50' : 'bg-white') : (darkMode ? 'bg-gray-800' : 'bg-gray-50/50')}`}>
-                          <td className="px-4 py-2 font-medium">{p.normalizedName}</td>
-                          <td className="px-4 py-2">
-                            <select
-                              value={p.category}
-                              onChange={e => handleCategoryChange(p.normalizedName, e.target.value)}
-                              className={`w-32 rounded border px-2 py-1 text-xs ${inputBg}`}
-                            >
-                              <option value="">-- Category --</option>
-                              {allCategories.map(c => (
-                                <option key={c} value={c}>{c}</option>
-                              ))}
-                              <option value="__new__">+ New Category...</option>
-                            </select>
-                          </td>
-                          <td className="text-right px-4 py-2">{method === 'production' ? Math.round(p.avgDailyProduction) : Math.round(p.avgDailySales)}</td>
-                          <td className="text-right px-4 py-2 font-mono">{p.smartBuffer.toFixed(2)}x</td>
-                          {p.dailyPlan.map(d => <td key={d.day} className="text-right px-2 py-2 font-mono">{d.qty}</td>)}
-                          <td className="text-right px-4 py-2 font-bold">{p.weeklyTotal}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
 
-            {/* Stock to Order - Purchased Items */}
-            {plan.products.filter(p => p.productType === 'purchased').length > 0 && (
-              <div>
-                <div className="px-4 md:px-6 py-3 bg-orange-50 flex items-center gap-2">
-                  <div className="w-3 h-3 rounded-full bg-orange-500" />
-                  <span className="font-semibold text-orange-700">Stock to Order</span>
-                </div>
+                {/* Table */}
                 <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
+                  <table className="w-full text-xs border-collapse">
                     <thead>
-                      <tr className={`${darkMode ? 'bg-gray-700' : 'bg-gray-50'}`}>
-                        <th className="text-left px-4 py-2 font-medium">Product</th>
-                        <th className="text-left px-4 py-2 font-medium">Category</th>
-                        <th className="text-right px-4 py-2 font-medium">Avg/Day</th>
-                        <th className="text-right px-4 py-2 font-medium">Buffer</th>
-                        {DAYS.map(d => <th key={d} className="text-right px-2 py-2 font-medium text-xs">{d.slice(0, 3)}</th>)}
-                        <th className="text-right px-4 py-2 font-medium">Total</th>
+                      <tr className="bg-teal-600 text-white">
+                        <th className="p-2.5 text-center font-bold uppercase tracking-wider w-10">#</th>
+                        <th className="p-2.5 text-left font-bold uppercase tracking-wider min-w-[200px]">Product</th>
+                        <th className="p-2.5 text-left font-bold uppercase tracking-wider min-w-[140px]">Category</th>
+                        <th className="p-2.5 text-center font-bold uppercase tracking-wider">Price</th>
+                        <th className="p-2.5 text-center font-bold uppercase tracking-wider">Avg Sales</th>
+                        <th className="p-2.5 text-center font-bold uppercase tracking-wider" title="Dynamic buffer applied">Buffer</th>
+                        {DAYS.map((d, i) => {
+                          const planStart = new Date(weekStart + 'T00:00:00');
+                          const dt = addDays(planStart, i);
+                          const isWe = i >= 5;
+                          return (
+                            <th
+                              key={d}
+                              className="p-2.5 text-center font-bold uppercase tracking-wider"
+                              style={{ backgroundColor: isWe ? '#2a5a30' : undefined }}
+                            >
+                              {DAYS_SHORT[i]}
+                              <span className="block font-normal opacity-75 text-[9px] mt-0.5">
+                                {dt.getDate()} {dt.toLocaleString('en-GB', { month: 'short' })}
+                              </span>
+                            </th>
+                          );
+                        })}
+                        <th className="p-2.5 text-center font-bold uppercase tracking-wider bg-teal-950">TOTAL</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {plan.products.filter(p => p.productType === 'purchased').map((p, idx) => (
-                        <tr key={p.normalizedName} className={`border-t ${darkMode ? 'border-gray-700' : 'border-gray-100'} ${idx % 2 === 0 ? (darkMode ? 'bg-gray-800/50' : 'bg-white') : (darkMode ? 'bg-gray-800' : 'bg-gray-50/50')}`}>
-                          <td className="px-4 py-2 font-medium">{p.normalizedName}</td>
-                          <td className="px-4 py-2">
-                            <select
-                              value={p.category}
-                              onChange={e => handleCategoryChange(p.normalizedName, e.target.value)}
-                              className={`w-32 rounded border px-2 py-1 text-xs ${inputBg}`}
-                            >
-                              <option value="">-- Category --</option>
-                              {allCategories.map(c => (
-                                <option key={c} value={c}>{c}</option>
-                              ))}
-                              <option value="__new__">+ New Category...</option>
-                            </select>
-                          </td>
-                          <td className="text-right px-4 py-2">{Math.round(p.avgDailySales)}</td>
-                          <td className="text-right px-4 py-2 font-mono">{p.smartBuffer.toFixed(2)}x</td>
-                          {p.dailyPlan.map(d => <td key={d.day} className="text-right px-2 py-2 font-mono">{d.qty}</td>)}
-                          <td className="text-right px-4 py-2 font-bold">{p.weeklyTotal}</td>
-                        </tr>
-                      ))}
+                      {groupByCategory(activePlan).map(([cat, rows]) => {
+                        const catTotal = rows.reduce((s, r) => s + r.weekTotal, 0);
+                        return (
+                          <React.Fragment key={cat}>
+                            {/* Category Header Row */}
+                            <tr className="bg-teal-50/50 dark:bg-teal-950/20 border-t-2 border-teal-600 dark:border-teal-800">
+                              <td colSpan={7 + DAYS.length} className="p-2.5 text-left font-bold text-teal-700 dark:text-teal-400">
+                                ▸ {cat.toUpperCase()} &nbsp;
+                                <span className="font-normal text-[10px] opacity-75">
+                                  {rows.length} product{rows.length !== 1 ? 's' : ''} · {catTotal.toLocaleString()} units/week
+                                </span>
+                              </td>
+                            </tr>
+                            {rows.map((row, ri) => {
+                              const cats = allCategoryNames();
+                              return (
+                                <tr key={row.item} className="border-b border-gray-100 dark:border-gray-800 hover:bg-teal-50/10 dark:hover:bg-teal-950/10">
+                                  <td className="p-2 text-center text-gray-400 text-[10px]">{ri + 1}</td>
+                                  <td className="p-2 text-left font-medium">{row.item}</td>
+                                  <td className="p-2 text-left">
+                                    <select
+                                      value={getCat(row.item)}
+                                      onChange={e => handleCategoryChange(row.item, e.target.value)}
+                                      className={`w-full rounded border px-2 py-1 text-xs ${inputBg}`}
+                                    >
+                                      {cats.map(c => (
+                                        <option key={c} value={c}>{c}</option>
+                                      ))}
+                                      <option value="__new__">＋ New category…</option>
+                                    </select>
+                                  </td>
+                                  <td className="p-2 text-center text-gray-500 dark:text-gray-400">{priceBand(row.medPrice)}</td>
+                                  <td className="p-2 text-center text-gray-500 dark:text-gray-400">{row.avgSales.toFixed(1)}</td>
+                                  <td className="p-2 text-center text-teal-600 dark:text-teal-400 font-bold">{row.dynBuf ? row.dynBuf.toFixed(2) + '×' : '—'}</td>
+                                  {DAYS.map((d, i) => {
+                                    const isWe = i >= 5;
+                                    const qty = row.planQty[d] || 0;
+                                    return (
+                                      <td
+                                        key={d}
+                                        className={`p-2 text-center ${isWe ? 'bg-green-50/30 dark:bg-green-950/10' : ''} ${qty > 0 ? 'font-bold' : 'text-gray-400'}`}
+                                      >
+                                        {qty || '—'}
+                                      </td>
+                                    );
+                                  })}
+                                  <td className="p-2 text-center font-bold bg-teal-50/30 dark:bg-teal-950/10 text-teal-700 dark:text-teal-400">{row.weekTotal}</td>
+                                </tr>
+                              );
+                            })}
+                          </React.Fragment>
+                        );
+                      })}
                     </tbody>
+                    <tfoot>
+                      <tr className="bg-teal-600 text-white font-bold">
+                        <td colSpan={3}></td>
+                        <td colSpan={2} className="p-2.5 text-left">DAILY TOTAL</td>
+                        <td></td>
+                        {dayTotals.map((t, i) => (
+                          <td key={i} className="p-2.5 text-center">{t.toLocaleString()}</td>
+                        ))}
+                        <td className="p-2.5 text-center bg-teal-950">{grandTotal.toLocaleString()}</td>
+                      </tr>
+                    </tfoot>
                   </table>
                 </div>
               </div>
             )}
           </div>
-        ))}
-
-        {data.length === 0 && (
-          <div className={`${cardBg} rounded-xl shadow-sm border p-12 text-center`}>
-            <Upload className="w-12 h-12 mx-auto mb-4 text-gray-300" />
-            <p className={`text-lg font-medium ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>Upload a POS export to get started</p>
-            <p className={`text-sm mt-1 ${textMuted}`}>Supports .xlsx files with columns like: Site Name, Date, Item Name, Sales Volume, Sales Value, Production Quantity</p>
-            {parsedInfo && parsedInfo.valid === 0 && (
-              <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700 inline-block">
-                No valid rows found. Check that your Excel has <strong>Site Name</strong>, <strong>Date</strong>, and <strong>Item Name</strong> columns.
-                {parsedInfo.columns && parsedInfo.columns.length > 0 && (
-                  <div className="mt-1 text-xs">Detected columns: {parsedInfo.columns.join(', ')}</div>
-                )}
-              </div>
-            )}
+        ) : (
+          <div className={`${cardBg} rounded-xl border p-12 text-center shadow-sm`}>
+            <div className="text-5xl mb-4">📋</div>
+            <p className="text-lg font-semibold">No plan generated yet</p>
+            <p className={`text-sm mt-1 max-w-md mx-auto ${textMuted}`}>
+              Upload your Excel export and press <strong>Generate Production Plan</strong> to see daily production quantities per store.
+            </p>
           </div>
         )}
       </div>
     </div>
   );
-}
-
-function dayStr(dateStr: string, dayName: string): string {
-  return `${dateStr} (${dayName})`;
 }
