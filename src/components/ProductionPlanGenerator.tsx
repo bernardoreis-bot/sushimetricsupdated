@@ -25,6 +25,39 @@ interface CleanedRow {
   productionQty: number;
 }
 
+const COLUMN_ALIASES: Record<string, string[]> = {
+  'Site Name': ['site', 'store', 'location', 'site name', 'store name', 'location name', 'outlet'],
+  'Date': ['date', 'day', 'transaction date', 'date time', 'posting date'],
+  'Item Name': ['item', 'product', 'product name', 'item name', 'description', 'item description', 'product description'],
+  'Sales Volume': ['sales volume', 'quantity', 'sales qty', 'volume', 'qty', 'units', 'sold'],
+  'Sales Value': ['sales value', 'value', 'revenue', 'amount', 'total', 'price', 'sales'],
+  'Production Quantity': ['production quantity', 'production', 'prod qty', 'made', 'produced', 'manufactured'],
+  'Item Type': ['item type', 'type', 'category', 'product type', 'item category'],
+  'Transaction Type': ['transaction type', 'trans type', 'tran type', 'trans'],
+  'Price Type': ['price type', 'pricing type', 'price band'],
+  'Discount': ['discount', 'disc', 'discount amount'],
+};
+
+function findColumn(row: Record<string, unknown>, field: string): string | null {
+  const lowerField = field.toLowerCase();
+  const aliases = COLUMN_ALIASES[field] || [lowerField];
+  const keys = Object.keys(row);
+  for (const alias of aliases) {
+    const found = keys.find(k => k.toLowerCase().trim() === alias);
+    if (found) return found;
+  }
+  for (const alias of aliases) {
+    const found = keys.find(k => k.toLowerCase().trim().includes(alias));
+    if (found) return found;
+  }
+  return null;
+}
+
+function getRowValue(row: Record<string, unknown>, field: string): unknown {
+  const col = findColumn(row, field);
+  return col ? row[col] : undefined;
+}
+
 interface ProductInfo {
   name: string;
   normalizedName: string;
@@ -103,11 +136,11 @@ function getPriceBand(salesValue: number, productionQty: number): number {
   return 1.30;
 }
 
-function shouldExcludeRow(row: UploadedRow): boolean {
-  const itemType = (row['Item Type'] || '').toLowerCase();
-  const transType = (row['Transaction Type'] || '').toLowerCase();
-  const priceType = (row['Price Type'] || '').toLowerCase();
-  const discount = (row['Discount'] || '').toLowerCase();
+function shouldExcludeRow(row: Record<string, unknown>): boolean {
+  const itemType = String(getRowValue(row, 'Item Type') || '').toLowerCase();
+  const transType = String(getRowValue(row, 'Transaction Type') || '').toLowerCase();
+  const priceType = String(getRowValue(row, 'Price Type') || '').toLowerCase();
+  const discount = String(getRowValue(row, 'Discount') || '').toLowerCase();
 
   if (EXCLUDE_ITEM_TYPES.some(t => itemType.includes(t))) return true;
   if (EXCLUDE_TRANSACTION_TYPES.some(t => transType.includes(t))) return true;
@@ -138,7 +171,7 @@ export default function ProductionPlanGenerator() {
     return saved ? JSON.parse(saved) : {};
   });
   const [showParams, setShowParams] = useState(false);
-  const [parsedInfo, setParsedInfo] = useState<{ total: number; valid: number; excluded: number } | null>(null);
+  const [parsedInfo, setParsedInfo] = useState<{ total: number; valid: number; excluded: number; columns?: string[]; missingCols?: number } | null>(null);
   const [categoryPrompt, setCategoryPrompt] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -182,26 +215,29 @@ export default function ProductionPlanGenerator() {
       const binary = evt.target?.result;
       const workbook = XLSX.read(binary, { type: 'array' });
       const sheet = workbook.Sheets[workbook.SheetNames[0]];
-      const json = XLSX.utils.sheet_to_json<UploadedRow>(sheet);
+      const rawJson: Record<string, unknown>[] = XLSX.utils.sheet_to_json(sheet);
+      const jsonKeys = rawJson.length > 0 ? Object.keys(rawJson[0]) : [];
+      console.log('Excel columns found:', jsonKeys);
 
       const cleaned: CleanedRow[] = [];
-      let excluded = 0;
-      for (const row of json) {
-        if (shouldExcludeRow(row)) { excluded++; continue; }
-        const site = (row['Site Name'] || '').trim();
-        const date = (row['Date'] || '').trim();
-        const itemName = (row['Item Name'] || '').trim();
-        if (!site || !date || !itemName) { excluded++; continue; }
+      let missingCols = 0;
+      for (const row of rawJson) {
+        if (shouldExcludeRow(row)) { continue; }
+        const site = String(getRowValue(row, 'Site Name') || '').trim();
+        const date = String(getRowValue(row, 'Date') || '').trim();
+        const itemName = String(getRowValue(row, 'Item Name') || '').trim();
+        if (!site || !date || !itemName) { missingCols++; continue; }
         cleaned.push({
           site,
           date,
           itemName,
-          salesVolume: Number(row['Sales Volume']) || 0,
-          salesValue: Number(row['Sales Value']) || 0,
-          productionQty: Number(row['Production Quantity']) || 0,
+          salesVolume: Number(getRowValue(row, 'Sales Volume')) || 0,
+          salesValue: Number(getRowValue(row, 'Sales Value')) || 0,
+          productionQty: Number(getRowValue(row, 'Production Quantity')) || 0,
         });
       }
-      setParsedInfo({ total: json.length, valid: cleaned.length, excluded });
+      const excluded = rawJson.length - cleaned.length - missingCols;
+      setParsedInfo({ total: rawJson.length, valid: cleaned.length, excluded, columns: jsonKeys, missingCols });
       setData(cleaned);
       setPlans([]);
     };
@@ -418,10 +454,20 @@ export default function ProductionPlanGenerator() {
               <span className={`text-sm ${textMuted}`}>{fileName}</span>
             )}
             {parsedInfo && (
-              <span className="text-sm">
-                <span className="text-green-600 font-medium">{parsedInfo.valid} rows loaded</span>
+              <span className="text-sm flex flex-wrap gap-x-3 gap-y-1 items-center">
+                <span className={parsedInfo.valid > 0 ? 'text-green-600 font-medium' : 'text-red-600 font-medium'}>
+                  {parsedInfo.valid} rows loaded
+                </span>
                 {parsedInfo.excluded > 0 && (
-                  <span className="text-amber-600 ml-2">({parsedInfo.excluded} excluded)</span>
+                  <span className="text-amber-600">{parsedInfo.excluded} excluded</span>
+                )}
+                {parsedInfo.missingCols && parsedInfo.missingCols > 0 ? (
+                  <span className="text-red-600">{parsedInfo.missingCols} rows missing Site/Date/Item</span>
+                ) : null}
+                {parsedInfo.columns && parsedInfo.columns.length > 0 && (
+                  <span className="text-gray-400 text-xs" title={parsedInfo.columns.join(', ')}>
+                    Cols: {parsedInfo.columns.join(', ')}
+                  </span>
                 )}
               </span>
             )}
@@ -679,7 +725,15 @@ export default function ProductionPlanGenerator() {
           <div className={`${cardBg} rounded-xl shadow-sm border p-12 text-center`}>
             <Upload className="w-12 h-12 mx-auto mb-4 text-gray-300" />
             <p className={`text-lg font-medium ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>Upload a POS export to get started</p>
-            <p className={`text-sm mt-1 ${textMuted}`}>Supports .xlsx files with Site Name, Date, Item Name, Sales Volume, Sales Value, Production Quantity</p>
+            <p className={`text-sm mt-1 ${textMuted}`}>Supports .xlsx files with columns like: Site Name, Date, Item Name, Sales Volume, Sales Value, Production Quantity</p>
+            {parsedInfo && parsedInfo.valid === 0 && (
+              <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700 inline-block">
+                No valid rows found. Check that your Excel has <strong>Site Name</strong>, <strong>Date</strong>, and <strong>Item Name</strong> columns.
+                {parsedInfo.columns && parsedInfo.columns.length > 0 && (
+                  <div className="mt-1 text-xs">Detected columns: {parsedInfo.columns.join(', ')}</div>
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>
