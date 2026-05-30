@@ -18,6 +18,7 @@ import ContactUs from './components/ContactUs';
 import DashboardCustomization from './components/DashboardCustomization';
 import StockAnalysis from './components/StockAnalysis';
 import PeopleTrackerEnhanced from './components/PeopleTrackerEnhanced';
+import ProductionPlanGenerator from './components/ProductionPlanGenerator';
 
 function App() {
   const [currentPage, setCurrentPage] = useState('dashboard');
@@ -134,6 +135,7 @@ function App() {
         {currentPage === 'powerbi' && <PowerBISales />}
         {currentPage === 'predictions' && <OrderPredictions />}
         {currentPage === 'production' && <ProductionSheetPanel />}
+        {currentPage === 'production-plan' && <ProductionPlanGenerator />}
         {currentPage === 'itemmapping' && <ItemMapping />}
         {currentPage === 'stockanalysis' && <StockAnalysis />}
         {currentPage === 'people' && <PeopleTrackerEnhanced />}

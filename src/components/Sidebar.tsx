@@ -41,6 +41,7 @@ export default function Sidebar({ currentPage, onNavigate }: SidebarProps) {
       title: 'Production Planning',
       items: [
         { id: 'production', label: 'Production Updates', icon: FileSpreadsheet },
+        { id: 'production-plan', label: 'Production Plan Generator', icon: FileSpreadsheet },
       ]
     },
     {
