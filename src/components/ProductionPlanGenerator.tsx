@@ -138,6 +138,8 @@ export default function ProductionPlanGenerator() {
     return saved ? JSON.parse(saved) : {};
   });
   const [showParams, setShowParams] = useState(false);
+  const [parsedInfo, setParsedInfo] = useState<{ total: number; valid: number; excluded: number } | null>(null);
+  const [categoryPrompt, setCategoryPrompt] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -149,6 +151,8 @@ export default function ProductionPlanGenerator() {
     }
   }, [darkMode]);
 
+  const allCategories = [...new Set(Object.values(categories).filter(Boolean))].sort();
+
   const saveCategory = useCallback((product: string, cat: string) => {
     setCategories(prev => {
       const next = { ...prev, [product]: cat };
@@ -156,6 +160,17 @@ export default function ProductionPlanGenerator() {
       return next;
     });
   }, []);
+
+  const handleCategoryChange = useCallback((product: string, value: string) => {
+    if (value === '__new__') {
+      const name = prompt('Enter new category name:');
+      if (name && name.trim()) {
+        saveCategory(product, name.trim());
+      }
+    } else {
+      saveCategory(product, value);
+    }
+  }, [saveCategory]);
 
   const handleFileUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -170,12 +185,13 @@ export default function ProductionPlanGenerator() {
       const json = XLSX.utils.sheet_to_json<UploadedRow>(sheet);
 
       const cleaned: CleanedRow[] = [];
+      let excluded = 0;
       for (const row of json) {
-        if (shouldExcludeRow(row)) continue;
+        if (shouldExcludeRow(row)) { excluded++; continue; }
         const site = (row['Site Name'] || '').trim();
         const date = (row['Date'] || '').trim();
         const itemName = (row['Item Name'] || '').trim();
-        if (!site || !date || !itemName) continue;
+        if (!site || !date || !itemName) { excluded++; continue; }
         cleaned.push({
           site,
           date,
@@ -185,7 +201,9 @@ export default function ProductionPlanGenerator() {
           productionQty: Number(row['Production Quantity']) || 0,
         });
       }
+      setParsedInfo({ total: json.length, valid: cleaned.length, excluded });
       setData(cleaned);
+      setPlans([]);
     };
     reader.readAsArrayBuffer(file);
   }, []);
@@ -239,20 +257,29 @@ export default function ProductionPlanGenerator() {
           totalProduction
         );
 
-        let smartBuffer = userBuffer;
-        if (productType === 'produced') {
-          const bandProducts = Object.values(productGroups).filter(pg => {
-            const pt = pg.reduce((s, r) => s + r.productionQty, 0) > 0 ? 'produced' : 'purchased';
-            return pt === 'produced';
-          });
-          const bandAvgProduction = bandProducts.length > 0
-            ? bandProducts.reduce((s, pg) => s + pg.reduce((s2, r) => s2 + r.productionQty, 0) / totalDays, 0) / bandProducts.length
-            : avgDailyProduction;
+        // Group produced products by price band for band-level averaging
+        const producedEntries = Object.entries(productGroups).filter(([, pg]) =>
+          pg.reduce((s, r) => s + r.productionQty, 0) > 0
+        );
+        const bandGroups: Record<string, { totalProd: number; count: number }> = {};
+        for (const [pname, pg] of producedEntries) {
+          const band = getPriceBand(
+            pg.reduce((s, r) => s + r.salesValue, 0),
+            pg.reduce((s, r) => s + r.productionQty, 0)
+          );
+          const key = band.toString();
+          if (!bandGroups[key]) bandGroups[key] = { totalProd: 0, count: 0 };
+          bandGroups[key].totalProd += pg.reduce((s, r) => s + r.productionQty, 0) / totalDays;
+          bandGroups[key].count++;
+        }
+        const userBandKey = userBuffer.toString();
+        const bandInfo = bandGroups[userBandKey];
+        const bandAvgProduction = bandInfo ? bandInfo.totalProd / bandInfo.count : avgDailyProduction;
 
+        let smartBuffer = userBuffer;
+        if (productType === 'produced' && avgDailyProduction > 0) {
           const bandReducedPerProduct = (userBuffer - 1.0) * bandAvgProduction;
-          if (avgDailyProduction > 0) {
-            smartBuffer = 1.0 + (bandReducedPerProduct / avgDailyProduction);
-          }
+          smartBuffer = 1.0 + (bandReducedPerProduct / avgDailyProduction);
           smartBuffer = Math.max(1.0, Math.min(smartBuffer, userBuffer * 1.5));
         }
 
@@ -390,9 +417,12 @@ export default function ProductionPlanGenerator() {
             {fileName && (
               <span className={`text-sm ${textMuted}`}>{fileName}</span>
             )}
-            {data.length > 0 && (
-              <span className="text-sm text-green-600 font-medium">
-                {data.length} rows loaded
+            {parsedInfo && (
+              <span className="text-sm">
+                <span className="text-green-600 font-medium">{parsedInfo.valid} rows loaded</span>
+                {parsedInfo.excluded > 0 && (
+                  <span className="text-amber-600 ml-2">({parsedInfo.excluded} excluded)</span>
+                )}
               </span>
             )}
             <button
@@ -571,13 +601,17 @@ export default function ProductionPlanGenerator() {
                         <tr key={p.normalizedName} className={`border-t ${darkMode ? 'border-gray-700' : 'border-gray-100'} ${idx % 2 === 0 ? (darkMode ? 'bg-gray-800/50' : 'bg-white') : (darkMode ? 'bg-gray-800' : 'bg-gray-50/50')}`}>
                           <td className="px-4 py-2 font-medium">{p.normalizedName}</td>
                           <td className="px-4 py-2">
-                            <input
-                              type="text"
+                            <select
                               value={p.category}
-                              onChange={e => saveCategory(p.normalizedName, e.target.value)}
-                              placeholder="Category"
-                              className={`w-28 rounded border px-2 py-1 text-xs ${inputBg}`}
-                            />
+                              onChange={e => handleCategoryChange(p.normalizedName, e.target.value)}
+                              className={`w-32 rounded border px-2 py-1 text-xs ${inputBg}`}
+                            >
+                              <option value="">-- Category --</option>
+                              {allCategories.map(c => (
+                                <option key={c} value={c}>{c}</option>
+                              ))}
+                              <option value="__new__">+ New Category...</option>
+                            </select>
                           </td>
                           <td className="text-right px-4 py-2">{method === 'production' ? Math.round(p.avgDailyProduction) : Math.round(p.avgDailySales)}</td>
                           <td className="text-right px-4 py-2 font-mono">{p.smartBuffer.toFixed(2)}x</td>
@@ -615,13 +649,17 @@ export default function ProductionPlanGenerator() {
                         <tr key={p.normalizedName} className={`border-t ${darkMode ? 'border-gray-700' : 'border-gray-100'} ${idx % 2 === 0 ? (darkMode ? 'bg-gray-800/50' : 'bg-white') : (darkMode ? 'bg-gray-800' : 'bg-gray-50/50')}`}>
                           <td className="px-4 py-2 font-medium">{p.normalizedName}</td>
                           <td className="px-4 py-2">
-                            <input
-                              type="text"
+                            <select
                               value={p.category}
-                              onChange={e => saveCategory(p.normalizedName, e.target.value)}
-                              placeholder="Category"
-                              className={`w-28 rounded border px-2 py-1 text-xs ${inputBg}`}
-                            />
+                              onChange={e => handleCategoryChange(p.normalizedName, e.target.value)}
+                              className={`w-32 rounded border px-2 py-1 text-xs ${inputBg}`}
+                            >
+                              <option value="">-- Category --</option>
+                              {allCategories.map(c => (
+                                <option key={c} value={c}>{c}</option>
+                              ))}
+                              <option value="__new__">+ New Category...</option>
+                            </select>
                           </td>
                           <td className="text-right px-4 py-2">{Math.round(p.avgDailySales)}</td>
                           <td className="text-right px-4 py-2 font-mono">{p.smartBuffer.toFixed(2)}x</td>
